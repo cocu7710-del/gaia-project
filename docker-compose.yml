@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: gaia-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: gaiadb
+      POSTGRES_USER: gaia
+      POSTGRES_PASSWORD: gaia
+    volumes:
+      - gaia_pgdata:/var/lib/postgresql/data
+
+volumes:
+  gaia_pgdata:
