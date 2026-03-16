@@ -1,6 +1,7 @@
 package com.gaiaproject.repository.building;
 
 import com.gaiaproject.domain.entity.building.GameBuilding;
+import com.gaiaproject.domain.enumtype.building.AcademyType;
 import com.gaiaproject.domain.enumtype.building.BuildingType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
@@ -46,4 +47,9 @@ public interface GameBuildingRepository extends JpaRepository<GameBuilding, UUID
      * 게임 내 특정 타입 건물 전체 조회
      */
     List<GameBuilding> findByGameIdAndBuildingType(UUID gameId, BuildingType buildingType);
+
+    /**
+     * 특정 플레이어의 아카데미 종류별 수 조회
+     */
+    int countByGameIdAndPlayerIdAndBuildingTypeAndAcademyType(UUID gameId, UUID playerId, BuildingType buildingType, AcademyType academyType);
 }

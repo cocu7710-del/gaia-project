@@ -56,5 +56,11 @@ public record PlayerStateResponse(
         Integer baltaksConvertedGaiaformers,
 
         // 소행성 광산 건설로 영구 제거된 가이아포머 수
-        Integer permanentlyRemovedGaiaformers
+        Integer permanentlyRemovedGaiaformers,
+
+        // QIC 아카데미 보유 여부 (QIC 획득 액션 가능)
+        Boolean hasQicAcademy,
+
+        // QIC 아카데미 액션 사용 여부 (라운드당 1회)
+        Boolean qicAcademyActionUsed
 ) {}

@@ -89,12 +89,12 @@ public class BuildingIncomeVo {
 
     /**
      * 학원 수입 계산
-     * - 각 학원당 2 지식
-     * (QIC 액션은 별도 처리)
+     * - 지식 아카데미: 2 지식 (아이타는 3 지식)
+     * - QIC 아카데미: 수입 없음 (액션 별도)
      */
-    public static ResourcesVo getAcademyIncome(int stockAcademy) {
-        int placed = MAX_ACADEMY - stockAcademy;
-        int knowledgeIncome = placed * 2;
+    public static ResourcesVo getAcademyIncome(int knowledgeAcademyCount, boolean isItars) {
+        int perAcademy = isItars ? 3 : 2;
+        int knowledgeIncome = knowledgeAcademyCount * perAcademy;
         return new ResourcesVo(0, 0, knowledgeIncome, 0, 0, 0, 0, 0, 0, null);
     }
 
@@ -106,14 +106,15 @@ public class BuildingIncomeVo {
             int stockTradingStation,
             int stockResearchLab,
             int stockPlanetaryInstitute,
-            int stockAcademy
+            int knowledgeAcademyCount,
+            boolean isItars
     ) {
         ResourcesVo total = ResourcesVo.zero();
         total = total.add(getMineIncome(stockMine));
         total = total.add(getTradingStationIncome(stockTradingStation));
         total = total.add(getResearchLabIncome(stockResearchLab));
         total = total.add(getPlanetaryInstituteIncome(stockPlanetaryInstitute));
-        total = total.add(getAcademyIncome(stockAcademy));
+        total = total.add(getAcademyIncome(knowledgeAcademyCount, isItars));
         return total;
     }
 }

@@ -11,10 +11,13 @@ import com.gaiaproject.domain.enumtype.player.FactionType;
 import com.gaiaproject.domain.enumtype.tech.EconomyTrackOption;
 import com.gaiaproject.domain.enumtype.tech.TechAbilityType;
 import com.gaiaproject.domain.enumtype.tech.TechTileCode;
+import com.gaiaproject.domain.enumtype.building.AcademyType;
+import com.gaiaproject.domain.enumtype.building.BuildingType;
 import com.gaiaproject.dto.BuildingIncomeVo;
 import com.gaiaproject.dto.ResourcesVo;
 import com.gaiaproject.dto.TechAbility;
 import com.gaiaproject.dto.TechTrackIncomeVo;
+import com.gaiaproject.repository.building.GameBuildingRepository;
 import com.gaiaproject.repository.game.GameRepository;
 import com.gaiaproject.repository.game.GameSeatRepository;
 import com.gaiaproject.repository.player.GamePlayerArtifactRepository;
@@ -44,6 +47,7 @@ public class IncomeService {
     private final GamePlayerRoundBoosterRepository playerBoosterRepository;
     private final GamePlayerTechTileRepository playerTechTileRepository;
     private final GamePlayerArtifactRepository playerArtifactRepository;
+    private final GameBuildingRepository gameBuildingRepository;
 
     /**
      * 특정 게임의 모든 플레이어에게 라운드 수입 적용
@@ -73,6 +77,7 @@ public class IncomeService {
         for (GamePlayerState player : players) {
             player.resetBoosterActionUsed();       // 라운드 시작 시 부스터 액션 초기화
             player.resetFactionAbilityUsed();      // 종족 고유 능력 초기화
+            player.resetQicAcademyActionUsed();    // QIC 아카데미 액션 초기화
             player.returnConvertedGaiaformers();   // 발타크 변환 가이아포머 반환
             resetTechTileActions(gameId, player.getPlayerId()); // ACTION 타일 초기화
             applyTerransGaiaIncome(player);        // 테란 PI: 가이아 구역 파워 → 자원
@@ -257,20 +262,27 @@ public class IncomeService {
      * 건물 수입 적용 (배치된 건물 기준)
      */
     private void applyBuildingIncome(GamePlayerState player) {
+        // 지식 아카데미 수 조회 (건물 DB에서)
+        int knowledgeAcademyCount = gameBuildingRepository.countByGameIdAndPlayerIdAndBuildingTypeAndAcademyType(
+                player.getGameId(), player.getPlayerId(), BuildingType.ACADEMY, AcademyType.KNOWLEDGE);
+        boolean isItars = player.getFactionType() == FactionType.ITARS;
+
         ResourcesVo buildingIncome = BuildingIncomeVo.getTotalBuildingIncome(
                 player.getStockMine(),
                 player.getStockTradingStation(),
                 player.getStockResearchLab(),
                 player.getStockPlanetaryInstitute(),
-                player.getStockAcademy()
+                knowledgeAcademyCount,
+                isItars
         );
 
         player.applyIncome(buildingIncome);
 
-        // 하이브 PI 수입: 1 QIC
-        if (player.getFactionType() == FactionType.IVITS && player.getStockPlanetaryInstitute() == 0) {
+        // 하이브/제노스 PI 수입: 1 QIC
+        if ((player.getFactionType() == FactionType.IVITS || player.getFactionType() == FactionType.XENOS)
+                && player.getStockPlanetaryInstitute() == 0) {
             player.addQic(1);
-            log.debug("[IVITS PI] QIC +1 수입 적용");
+            log.debug("[{} PI] QIC +1 수입 적용", player.getFactionType());
         }
         log.debug("건물 수입 적용: 광산 {}개, 교역소 {}개, 연구소 {}개, 행성수도 {}개, 학원 {}개 -> {}",
                 8 - player.getStockMine(),

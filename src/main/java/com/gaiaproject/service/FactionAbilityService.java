@@ -43,9 +43,9 @@ import java.util.UUID;
  * - HADSCH_HALLAS_CREDIT_CONVERT: (프리 액션) 크레딧으로 자원 변환 (trackCode=ORE/KNOWLEDGE/QIC)
  * - GLEENS_FEDERATION_TOKEN     : (액션) 2크레딧+1광석+1지식 → 연방 토큰 획득
  * - ITARS_GAIA_TO_TECH_TILE     : (액션) 4 가이아파워 영구 제거 → 기본 기술타일 (FE에서 타일 선택)
- * - IVITS_PLACE_STATION         : TODO
+ * - IVITS_PLACE_STATION         : (액션, 라운드당 1회) 빈 헥스에 우주정거장 배치 + 인접 연방 자동 편입
+ * - TINKEROIDS_ACTION           : (라운드 시작 시) 6개 액션 중 선택 → 메인 액션으로 사용
  * - MOWEIDS_RING                : TODO
- * - TINKEROIDS_ACTION           : TODO
  */
 @Slf4j
 @Service
@@ -95,6 +95,7 @@ public class FactionAbilityService {
                 case "TINKEROIDS_USE_ACTION"         -> handleTinkeroidsUseAction(gameId, playerId, ps, code);
                 // ITARS_GAIA_TO_TECH_TILE: 라운드 종료 시 자동 처리 (handleItarsRoundEndChoice)
                 case "IVITS_PLACE_STATION"          -> handleIvitsPlaceStation(gameId, playerId, ps, code, request);
+                case "QIC_ACADEMY_ACTION"           -> handleQicAcademyAction(gameId, playerId, ps, code);
                 default -> FactionAbilityResponse.fail(gameId, code, "알 수 없는 능력 코드: " + code);
             };
         } catch (IllegalStateException e) {
@@ -529,6 +530,23 @@ public class FactionAbilityService {
             case "SCIENCE"        -> "techScience";
             default -> throw new IllegalArgumentException("알 수 없는 트랙 코드: " + trackCode);
         };
+    }
+
+    /** QIC 아카데미 액션: QIC 1개 획득 (라운드당 1회, 프리 액션) */
+    private FactionAbilityResponse handleQicAcademyAction(UUID gameId, UUID playerId, GamePlayerState ps, String code) {
+        // QIC 아카데미 보유 여부 확인
+        int qicAcademyCount = buildingRepository.countByGameIdAndPlayerIdAndBuildingTypeAndAcademyType(
+                gameId, playerId, BuildingType.ACADEMY, com.gaiaproject.domain.enumtype.building.AcademyType.QIC);
+        if (qicAcademyCount <= 0) {
+            return FactionAbilityResponse.fail(gameId, code, "QIC 아카데미를 보유하고 있지 않습니다");
+        }
+        if (ps.isQicAcademyActionUsed()) {
+            return FactionAbilityResponse.fail(gameId, code, "이번 라운드에 이미 사용했습니다");
+        }
+        ps.useQicAcademyAction();
+        playerStateRepository.save(ps);
+        log.info("[QIC ACADEMY] QIC +1: player={}", playerId);
+        return FactionAbilityResponse.success(gameId, code, null);
     }
 
     /** 건물 좌표 교환 (reflection 없이 직접 setter가 없으므로 GameBuilding에 swapPosition 추가 필요) */

@@ -8,5 +8,6 @@ public record UpgradeBuildingRequest(
         int hexR,
         String targetBuildingType,  // "TRADING_STATION", "RESEARCH_LAB", "PLANETARY_INSTITUTE", "ACADEMY"
         String techTileCode,        // (선택) 교역소/아카데미 건설 시 획득할 기술 타일 코드
-        String techTrackCode        // (선택) COMMON 타일일 때 플레이어가 선택한 트랙
+        String techTrackCode,       // (선택) COMMON 타일일 때 플레이어가 선택한 트랙
+        String academyType          // (선택) "KNOWLEDGE" 또는 "QIC" — 아카데미 건설 시 필수
 ) {}

@@ -11,6 +11,7 @@ import com.gaiaproject.repository.game.GameRepository;
 import com.gaiaproject.repository.game.GameSeatRepository;
 import com.gaiaproject.repository.leech.GameLeechOfferRepository;
 import com.gaiaproject.repository.player.GamePlayerStateRepository;
+import com.gaiaproject.repository.tech.GamePlayerTechTileRepository;
 import org.springframework.transaction.annotation.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -30,6 +31,7 @@ public class PowerLeechService {
     private final GameRepository gameRepository;
     private final GameWebSocketService webSocketService;
     private final ActionService actionService;
+    private final GamePlayerTechTileRepository playerTechTileRepository;
 
     /**
      * 건물 배치/업그레이드 후 파워 리치 배치 처리.
@@ -68,7 +70,7 @@ public class PowerLeechService {
             if (b.getPlayerId().equals(triggerPlayerId)) continue;
             int dist = hexDistance(hexQ, hexR, b.getHexQ(), b.getHexR());
             if (dist > 2) continue;
-            int pv = buildingPowerValue(b.getBuildingType());
+            int pv = buildingPowerValue(b.getBuildingType(), gameId, b.getPlayerId());
             maxPowerByPlayer.merge(b.getPlayerId(), pv, Math::max);
         }
 
@@ -363,6 +365,23 @@ public class PowerLeechService {
             case PLANETARY_INSTITUTE, ACADEMY -> 3;
             default -> 0;
         };
+    }
+
+    /** BASIC_TILE_9 보유 시 큰 건물 파워 가치 +1 반영 */
+    private int buildingPowerValue(BuildingType type, UUID gameId, UUID playerId) {
+        int base = buildingPowerValue(type);
+        if ((type == BuildingType.PLANETARY_INSTITUTE || type == BuildingType.ACADEMY)
+                && hasActiveTechTile(gameId, playerId, "BASIC_TILE_9")) {
+            base += 1;
+        }
+        return base;
+    }
+
+    private boolean hasActiveTechTile(UUID gameId, UUID playerId, String tileCode) {
+        return playerTechTileRepository
+                .findByGameIdAndPlayerIdAndIsCovered(gameId, playerId, false)
+                .stream()
+                .anyMatch(t -> tileCode.equals(t.getTechTileCode()));
     }
 
     private int hexDistance(int q1, int r1, int q2, int r2) {

@@ -122,6 +122,10 @@ public class GamePlayerState {
     @Column(name = "permanently_removed_gaiaformers", nullable = false)
     private int permanentlyRemovedGaiaformers = 0;
 
+    // QIC 아카데미 액션 사용 여부 (라운드당 1회)
+    @Column(name = "qic_academy_action_used", nullable = false)
+    private boolean qicAcademyActionUsed = false;
+
     // 발타크 전용: 이번 라운드 QIC로 변환된 가이아포머 수 (다음 라운드 시작 시 반환)
     @Column(name = "baltaks_converted_gaiaformers", nullable = false)
     private int baltaksConvertedGaiaformers = 0;
@@ -158,6 +162,14 @@ public class GamePlayerState {
     }
 
     public void addQic(int amount) {
+        if (factionType == com.gaiaproject.domain.enumtype.player.FactionType.GLEENS) {
+            if (stockAcademy < 2) {
+                // 아카데미 건설 후: QIC → 광석 자동 변환
+                this.ore = Math.min(15, this.ore + amount);
+            }
+            // 아카데미 건설 전: QIC 획득 불가 (버림)
+            return;
+        }
         this.qic += amount;
     }
 
@@ -481,24 +493,6 @@ public class GamePlayerState {
         this.updatedAt = LocalDateTime.now();
     }
 
-    /** 아이타 전용: bowl2→bowl3 대신 bowl2→gaia */
-    public void chargePowerItars(int amount) {
-        int remaining = amount;
-        int originalBowl2 = powerBowl2;
-
-        int fromBowl1 = Math.min(powerBowl1, remaining);
-        powerBowl1 -= fromBowl1;
-        powerBowl2 += fromBowl1;
-        remaining -= fromBowl1;
-
-        if (remaining > 0) {
-            int fromBowl2 = Math.min(originalBowl2, remaining);
-            powerBowl2 -= fromBowl2;
-            gaiaPower += fromBowl2; // bowl3 대신 가이아 구역으로
-        }
-        this.updatedAt = java.time.LocalDateTime.now();
-    }
-
     /** 타클론 전용: 브레인스톤 우선 충전 */
     public void chargePowerTaklons(int amount) {
         int remaining = amount;
@@ -529,25 +523,13 @@ public class GamePlayerState {
         this.updatedAt = java.time.LocalDateTime.now();
     }
 
-    /** 종족 규칙을 반영한 파워 충전 (ITARS/TAKLONS 전용 규칙 적용) */
+    /** 종족 규칙을 반영한 파워 충전 (TAKLONS 전용 규칙 적용, 아이타는 차징은 일반과 동일 - 소각만 다름) */
     public void chargePowerWithFactionRules(int amount) {
-        if (factionType == com.gaiaproject.domain.enumtype.player.FactionType.ITARS) {
-            chargePowerItars(amount);
-        } else if (factionType == com.gaiaproject.domain.enumtype.player.FactionType.TAKLONS) {
+        if (factionType == com.gaiaproject.domain.enumtype.player.FactionType.TAKLONS) {
             chargePowerTaklons(amount);
         } else {
             chargePower(amount);
         }
-    }
-
-    /** 글린 전용: QIC 획득 시 자동으로 광석으로 변환 */
-    public void addQicFactionAware(int amount) {
-        if (factionType == com.gaiaproject.domain.enumtype.player.FactionType.GLEENS) {
-            this.ore += amount; // QIC → 광석 자동 변환
-        } else {
-            this.qic += amount;
-        }
-        this.updatedAt = java.time.LocalDateTime.now();
     }
 
     /** 발타크 전용: 가이아포머 1개 → QIC 1개 변환 (프리 액션) */
@@ -599,6 +581,22 @@ public class GamePlayerState {
     /** 라운드 시작 시 종족 고유 능력 초기화 */
     public void resetFactionAbilityUsed() {
         this.factionAbilityUsed = false;
+        this.updatedAt = java.time.LocalDateTime.now();
+    }
+
+    /** QIC 아카데미 액션 사용 처리 */
+    public void useQicAcademyAction() {
+        if (this.qicAcademyActionUsed) {
+            throw new IllegalStateException("이번 라운드에 이미 QIC 아카데미 액션을 사용했습니다.");
+        }
+        this.qicAcademyActionUsed = true;
+        this.addQic(1);
+        this.updatedAt = java.time.LocalDateTime.now();
+    }
+
+    /** 라운드 시작 시 QIC 아카데미 액션 초기화 */
+    public void resetQicAcademyActionUsed() {
+        this.qicAcademyActionUsed = false;
         this.updatedAt = java.time.LocalDateTime.now();
     }
 

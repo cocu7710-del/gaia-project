@@ -32,6 +32,12 @@ public record GamePublicStateResponse(
         @Schema(description = "모웨이드의 추가 3삽 행성 (없으면 null)")
         String moweidsExtraRingPlanet,
 
+        @Schema(description = "특수 페이즈 대기 중인 플레이어 ID (ITARS_GAIA_PHASE, TINKEROIDS_ACTION_PHASE)")
+        String pendingSpecialPlayerId,
+
+        @Schema(description = "특수 페이즈 부가 정보 (아이타: 선택 가능 횟수, 팅커로이드: 선택 가능 액션 목록)")
+        java.util.Map<String, Object> pendingSpecialData,
+
         List<SeatView> seats
 ) {
     /**

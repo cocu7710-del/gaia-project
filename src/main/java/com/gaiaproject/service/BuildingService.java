@@ -272,6 +272,16 @@ public class BuildingService {
                 }
                 case ACADEMY -> {
                     if (playerState.getStockAcademy() <= 0) return UpgradeBuildingResponse.fail(gameId, "아카데미 재고가 없습니다");
+                    // 아카데미 종류 검증
+                    if (request.academyType() == null || request.academyType().isBlank()) {
+                        return UpgradeBuildingResponse.fail(gameId, "아카데미 종류를 선택해야 합니다 (KNOWLEDGE / QIC)");
+                    }
+                    com.gaiaproject.domain.enumtype.building.AcademyType acaType;
+                    try {
+                        acaType = com.gaiaproject.domain.enumtype.building.AcademyType.valueOf(request.academyType());
+                    } catch (Exception e) {
+                        return UpgradeBuildingResponse.fail(gameId, "잘못된 아카데미 종류입니다: " + request.academyType());
+                    }
                     playerState.spendCredit(6);
                     playerState.spendOre(6);
                     playerState.decreaseStockAcademy();
@@ -293,7 +303,12 @@ public class BuildingService {
         gamePlayerStateRepository.save(playerState);
 
         // 건물 업그레이드
-        building.upgrade(targetType);
+        if (targetType == BuildingType.ACADEMY && request.academyType() != null) {
+            building.upgradeToAcademy(
+                com.gaiaproject.domain.enumtype.building.AcademyType.valueOf(request.academyType()));
+        } else {
+            building.upgrade(targetType);
+        }
         gameBuildingRepository.save(building);
 
         log.info("건물 업그레이드: game={}, player={}, ({},{}) {}→{}", gameId, request.playerId(), request.hexQ(), request.hexR(), fromType, targetType);
@@ -307,14 +322,6 @@ public class BuildingService {
             default -> {}
         }
         gamePlayerStateRepository.save(playerState);
-
-        // PASSIVE: BASIC_TILE_9 - 큰 건물(PI/Academy) 건설 시 파워 4 차징
-        if ((targetType == BuildingType.PLANETARY_INSTITUTE || targetType == BuildingType.ACADEMY)
-                && hasActiveTechTile(gameId, request.playerId(), "BASIC_TILE_9")) {
-            playerState.chargePower(4);
-            gamePlayerStateRepository.save(playerState);
-            log.info("[PASSIVE TILE_9] 큰 건물 건설 파워 4 차징: player={}, building={}", request.playerId(), targetType);
-        }
 
         // 연구소/아카데미/스페이스자이언트 의회 건설 시 기술 타일 획득 (선택)
         boolean isTileEligible = targetType == BuildingType.RESEARCH_LAB

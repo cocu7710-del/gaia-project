@@ -22,6 +22,9 @@ import com.gaiaproject.dto.response.PlayerStateResponse;
 import com.gaiaproject.dto.response.SelectBoosterResponse;
 import com.gaiaproject.dto.response.StartGameResponse;
 import com.gaiaproject.dto.response.VerifyParticipantResponse;
+import com.gaiaproject.domain.enumtype.building.AcademyType;
+import com.gaiaproject.domain.enumtype.building.BuildingType;
+import com.gaiaproject.repository.building.GameBuildingRepository;
 import com.gaiaproject.repository.game.GameParticipantRepository;
 import com.gaiaproject.repository.game.GameRepository;
 import com.gaiaproject.repository.game.GameSeatRepository;
@@ -77,6 +80,9 @@ public class GameService {
 
     /** 플레이어 상태 저장소 **/
     private final GamePlayerStateRepository playerStateRepository;
+
+    /** 건물 저장소 **/
+    private final GameBuildingRepository gameBuildingRepository;
 
     /** 수입 관련 서비스 **/
     private final IncomeService incomeService;
@@ -311,6 +317,33 @@ public class GameService {
         Integer nextSetupSeatNo = game.isInSetupPhase() ? game.getCurrentSetupSeatNo() : null;
         Integer currentTurnSeatNo = "PLAYING".equals(gamePhase) ? game.getCurrentTurnSeatNo() : null;
 
+        // 특수 페이즈 복원 정보
+        String pendingSpecialPlayerId = null;
+        java.util.Map<String, Object> pendingSpecialData = null;
+
+        if ("ITARS_GAIA_PHASE".equals(gamePhase)) {
+            GamePlayerState itarsPlayer = playerStateRepository.findByGameId(game.getId()).stream()
+                    .filter(p -> p.getFactionType() == FactionType.ITARS)
+                    .findFirst().orElse(null);
+            if (itarsPlayer != null) {
+                pendingSpecialPlayerId = itarsPlayer.getPlayerId().toString();
+                pendingSpecialData = java.util.Map.of("availableChoices", itarsPlayer.getGaiaPower() / 4);
+            }
+        } else if ("TINKEROIDS_ACTION_PHASE".equals(gamePhase)) {
+            GamePlayerState tinkPlayer = playerStateRepository.findByGameId(game.getId()).stream()
+                    .filter(p -> p.getFactionType() == FactionType.TINKEROIDS)
+                    .findFirst().orElse(null);
+            if (tinkPlayer != null) {
+                pendingSpecialPlayerId = tinkPlayer.getPlayerId().toString();
+                int round = game.getCurrentRound() != null ? game.getCurrentRound() : 1;
+                java.util.List<String> pool = round <= 3
+                        ? java.util.List.of("TINK_TERRAFORM_1", "TINK_POWER_4", "TINK_QIC_1")
+                        : java.util.List.of("TINK_TERRAFORM_3", "TINK_KNOWLEDGE_3", "TINK_QIC_2");
+                java.util.List<String> available = pool.stream().filter(a -> !tinkPlayer.isTinkeroidsActionUsed(a)).toList();
+                pendingSpecialData = java.util.Map.of("availableActions", available, "currentRound", round);
+            }
+        }
+
         return new GamePublicStateResponse(
                 game.getId(),
                 game.getStatus(),
@@ -321,6 +354,8 @@ public class GameService {
                 currentTurnSeatNo,
                 game.getTinkeroidsExtraRingPlanet(),
                 game.getMoweidsExtraRingPlanet(),
+                pendingSpecialPlayerId,
+                pendingSpecialData,
                 seats
         );
     }
@@ -479,12 +514,32 @@ public class GameService {
         webSocketService.broadcastBoosterSelected(roomId, playerId, seatNo, boosterCode, nextSeatNo);
 
         // 8) 모든 부스터 선택 완료 시 → 실제 게임 시작 (라운드 1 수입 적용)
-        System.out.println("=== [DEBUG] Checking if nextSeatNo == 0: " + (nextSeatNo == 0) + " ===");
         if (nextSeatNo == 0) {
-            System.out.println("=== [DEBUG] Starting income application ===");
             game.startPlaying();
             gameRepository.save(game);
             incomeService.applyRoundIncome(game);
+
+            // 팅커로이드 PI 체크 (셋업 시 PI 배치하므로 라운드 1부터 적용)
+            java.util.List<GamePlayerState> allPlayers = playerStateRepository.findByGameId(roomId);
+            GamePlayerState tinkeroidsPlayer = allPlayers.stream()
+                    .filter(p -> p.getFactionType() == FactionType.TINKEROIDS
+                            && p.getStockPlanetaryInstitute() == 0)
+                    .findFirst().orElse(null);
+
+            if (tinkeroidsPlayer != null) {
+                int round = game.getCurrentRound() != null ? game.getCurrentRound() : 1;
+                java.util.List<String> pool = round <= 3
+                        ? java.util.List.of("TINK_TERRAFORM_1", "TINK_POWER_4", "TINK_QIC_1")
+                        : java.util.List.of("TINK_TERRAFORM_3", "TINK_KNOWLEDGE_3", "TINK_QIC_2");
+                java.util.List<String> available = pool.stream().filter(a -> !tinkeroidsPlayer.isTinkeroidsActionUsed(a)).toList();
+                if (!available.isEmpty()) {
+                    game.setGamePhase("TINKEROIDS_ACTION_PHASE");
+                    gameRepository.save(game);
+                    webSocketService.broadcastTinkeroidsActionChoice(roomId, tinkeroidsPlayer.getPlayerId(), available, round);
+                    return SelectBoosterResponse.success(roomId, nextSeatNo);
+                }
+            }
+
             webSocketService.broadcastStateUpdated(roomId);
         }
 
@@ -679,7 +734,10 @@ public class GameService {
      */
     public List<PlayerStateResponse> getPlayerStates(UUID roomId) {
         return playerStateRepository.findByGameId(roomId).stream()
-                .map(p -> new PlayerStateResponse(
+                .map(p -> {
+                    boolean hasQicAcademy = gameBuildingRepository.countByGameIdAndPlayerIdAndBuildingTypeAndAcademyType(
+                            roomId, p.getPlayerId(), BuildingType.ACADEMY, AcademyType.QIC) > 0;
+                    return new PlayerStateResponse(
                         p.getPlayerId(),
                         p.getSeatNo(),
                         p.getFactionType() != null ? p.getFactionType().name() : null,
@@ -708,8 +766,11 @@ public class GameService {
                         p.isBoosterActionUsed(),
                         p.isFactionAbilityUsed(),
                         p.getBaltaksConvertedGaiaformers(),
-                        p.getPermanentlyRemovedGaiaformers()
-                ))
+                        p.getPermanentlyRemovedGaiaformers(),
+                        hasQicAcademy,
+                        p.isQicAcademyActionUsed()
+                    );
+                })
                 .collect(Collectors.toList());
     }
 }

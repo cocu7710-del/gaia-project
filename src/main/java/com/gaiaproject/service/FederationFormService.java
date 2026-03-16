@@ -18,6 +18,7 @@ import com.gaiaproject.repository.federation.*;
 import com.gaiaproject.repository.game.GameRepository;
 import com.gaiaproject.repository.player.GamePlayerFederationTokenRepository;
 import com.gaiaproject.repository.player.GamePlayerStateRepository;
+import com.gaiaproject.repository.tech.GamePlayerTechTileRepository;
 import com.gaiaproject.util.HexUtil;
 import com.gaiaproject.domain.enumtype.action.ActionType;
 import lombok.RequiredArgsConstructor;
@@ -43,6 +44,7 @@ public class FederationFormService {
     private final GameFederationOfferRepository federationOfferRepository;
     private final GamePlayerFederationTokenRepository playerFederationTokenRepository;
     private final ActionService actionService;
+    private final GamePlayerTechTileRepository playerTechTileRepository;
 
     /**
      * 건물 선택 검증 (토큰 배치 전). 파워 합계 + 기존 연방 중복 체크 + 최소 토큰 수 반환.
@@ -69,7 +71,7 @@ public class FederationFormService {
             String key = hex[0] + "," + hex[1];
             GameBuilding b = myBuildingMap.get(key);
             if (b == null) return Map.of("success", false, "message", "내 건물이 아닙니다: (" + hex[0] + "," + hex[1] + ")");
-            totalPower += buildingPowerValue(b.getBuildingType());
+            totalPower += buildingPowerValue(b.getBuildingType(), gameId, playerId);
         }
 
         // 기존 연방 중복 체크 (하이브 제외)
@@ -82,8 +84,9 @@ public class FederationFormService {
             }
         }
 
-        // 파워 체크
-        int requiredPower = 7;
+        // 파워 체크 (제노스 PI: 6, 기본: 7)
+        boolean isXenosPi = ps.getFactionType() == FactionType.XENOS && ps.getStockPlanetaryInstitute() == 0;
+        int requiredPower = isXenosPi ? 6 : 7;
         if (isIvits) {
             List<GameFederationGroup> existingGroups = federationGroupRepository.findByGameIdAndPlayerId(gameId, playerId);
             if (!existingGroups.isEmpty()) {
@@ -228,8 +231,12 @@ public class FederationFormService {
             return FormFederationResponse.fail(gameId, "건물과 토큰이 연결되어 있지 않습니다");
         }
 
-        // 파워 값
-        int totalPowerValue = selectedBuildings.stream().mapToInt(b -> buildingPowerValue(b.getBuildingType())).sum();
+        // 파워 값 (BASIC_TILE_9 반영)
+        int totalPowerValue = selectedBuildings.stream().mapToInt(b -> buildingPowerValue(b.getBuildingType(), gameId, playerId)).sum();
+
+        // 제노스 PI: 연방 필요 파워 6
+        boolean isXenosPi = ps.getFactionType() == FactionType.XENOS && ps.getStockPlanetaryInstitute() == 0;
+        int fedRequiredPower = isXenosPi ? 6 : 7;
 
         if (isIvits) {
             // 하이브: 기존 연방 파워 합산 + 7의 배수 체크
@@ -239,7 +246,7 @@ public class FederationFormService {
                 GameFederationGroup eg = existingGroups.get(0);
                 for (GameFederationBuilding fb : federationBuildingRepository.findByFederationGroupId(eg.getId())) {
                     GameBuilding b = buildingRepository.findFirstByGameIdAndHexQAndHexRAndIsLantidsMine(gameId, fb.getHexQ(), fb.getHexR(), false).orElse(null);
-                    if (b != null) existingPowerValue += buildingPowerValue(b.getBuildingType());
+                    if (b != null) existingPowerValue += buildingPowerValue(b.getBuildingType(), gameId, playerId);
                 }
             }
             int total = existingPowerValue + totalPowerValue;
@@ -248,8 +255,8 @@ public class FederationFormService {
                 return FormFederationResponse.fail(gameId, "연방 파워가 부족합니다 (현재: " + total + ", 다음 목표: " + (prevTiles + 1) * 7 + ")");
             }
         } else {
-            if (totalPowerValue < 7) {
-                return FormFederationResponse.fail(gameId, "파워 값이 7 미만입니다 (현재: " + totalPowerValue + ")");
+            if (totalPowerValue < fedRequiredPower) {
+                return FormFederationResponse.fail(gameId, "파워 값이 " + fedRequiredPower + " 미만입니다 (현재: " + totalPowerValue + ")");
             }
         }
 
@@ -336,10 +343,12 @@ public class FederationFormService {
             return FormFederationResponse.fail(gameId, "건물과 토큰이 연결되어 있지 않습니다");
         }
 
-        // 5. 파워 값 합계 검증 (7 이상)
-        int totalPowerValue = selectedBuildings.stream().mapToInt(b -> buildingPowerValue(b.getBuildingType())).sum();
-        if (totalPowerValue < 7) {
-            return FormFederationResponse.fail(gameId, "파워 값이 7 미만입니다 (현재: " + totalPowerValue + ")");
+        // 5. 파워 값 합계 검증 (제노스 PI: 6 이상, 기본: 7 이상)
+        int totalPowerValue = selectedBuildings.stream().mapToInt(b -> buildingPowerValue(b.getBuildingType(), gameId, playerId)).sum();
+        boolean isXenosPiHere = ps.getFactionType() == FactionType.XENOS && ps.getStockPlanetaryInstitute() == 0;
+        int fedReq = isXenosPiHere ? 6 : 7;
+        if (totalPowerValue < fedReq) {
+            return FormFederationResponse.fail(gameId, "파워 값이 " + fedReq + " 미만입니다 (현재: " + totalPowerValue + ")");
         }
 
         // 6. 최소 토큰 사용 검증
@@ -406,7 +415,7 @@ public class FederationFormService {
         }
 
         // 신규 건물 파워값
-        int newPowerValue = selectedBuildings.stream().mapToInt(b -> buildingPowerValue(b.getBuildingType())).sum();
+        int newPowerValue = selectedBuildings.stream().mapToInt(b -> buildingPowerValue(b.getBuildingType(), gameId, playerId)).sum();
 
         // 기존 연방 파워 합산
         int existingPowerValue = 0;
@@ -414,7 +423,7 @@ public class FederationFormService {
             List<GameFederationBuilding> existingFedBuildings = federationBuildingRepository.findByFederationGroupId(existingGroup.getId());
             for (GameFederationBuilding fb : existingFedBuildings) {
                 GameBuilding b = buildingRepository.findFirstByGameIdAndHexQAndHexRAndIsLantidsMine(gameId, fb.getHexQ(), fb.getHexR(), false).orElse(null);
-                if (b != null) existingPowerValue += buildingPowerValue(b.getBuildingType());
+                if (b != null) existingPowerValue += buildingPowerValue(b.getBuildingType(), gameId, playerId);
             }
         }
 
@@ -538,6 +547,19 @@ public class FederationFormService {
             case SPACE_STATION -> 1;
             default -> 0;
         };
+    }
+
+    /** BASIC_TILE_9 보유 시 큰 건물 파워 가치 +1 반영 */
+    private int buildingPowerValue(BuildingType type, UUID gameId, UUID playerId) {
+        int base = buildingPowerValue(type);
+        if ((type == BuildingType.PLANETARY_INSTITUTE || type == BuildingType.ACADEMY)
+                && playerTechTileRepository
+                    .findByGameIdAndPlayerIdAndIsCovered(gameId, playerId, false)
+                    .stream()
+                    .anyMatch(t -> "BASIC_TILE_9".equals(t.getTechTileCode()))) {
+            base += 1;
+        }
+        return base;
     }
 
     /** 게임의 모든 연방 데이터 조회 (FE 표시용) */

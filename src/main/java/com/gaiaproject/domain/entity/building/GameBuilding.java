@@ -1,5 +1,6 @@
 package com.gaiaproject.domain.entity.building;
 
+import com.gaiaproject.domain.enumtype.building.AcademyType;
 import com.gaiaproject.domain.enumtype.building.BuildingType;
 import jakarta.persistence.*;
 import lombok.AccessLevel;
@@ -37,6 +38,11 @@ public class GameBuilding {
     @Column(name = "building_type", nullable = false, length = 30)
     private BuildingType buildingType;
 
+    // 아카데미 종류 (KNOWLEDGE / QIC, 아카데미가 아닌 건물은 null)
+    @Enumerated(EnumType.STRING)
+    @Column(name = "academy_type", length = 20)
+    private AcademyType academyType;
+
     // 란티다 전용: 타인 건물 위치에 지은 광산 (업그레이드 불가)
     @Column(name = "is_lantids_mine", nullable = false)
     @com.fasterxml.jackson.annotation.JsonProperty("isLantidsMine")
@@ -71,5 +77,13 @@ public class GameBuilding {
      */
     public void upgrade(BuildingType newType) {
         this.buildingType = newType;
+    }
+
+    /**
+     * 아카데미 업그레이드 (종류 지정)
+     */
+    public void upgradeToAcademy(AcademyType academyType) {
+        this.buildingType = BuildingType.ACADEMY;
+        this.academyType = academyType;
     }
 }
