@@ -269,16 +269,18 @@ public class PassService {
         List<GamePlayerPass> passes = passRepository.findByGameIdAndRoundNumber(gameId, prevRound);
         passes.sort((a, b) -> a.getPassedAt().compareTo(b.getPassedAt()));
         if (!passes.isEmpty()) {
-            // turn_order를 패스 순서대로 갱신 (1, 2, 3, 4)
+            // turn_order를 패스 순서대로 갱신 (1, 2, 3, 4) — 한번에 저장
+            List<com.gaiaproject.domain.entity.game.GameSeat> seatsToUpdate = new java.util.ArrayList<>();
             for (int i = 0; i < passes.size(); i++) {
                 final int order = i + 1;
                 UUID pid = passes.get(i).getPlayerId();
                 seatRepository.findByGameIdAndPlayerId(gameId, pid)
                         .ifPresent(seat -> {
                             seat.setTurnOrder(order);
-                            seatRepository.save(seat);
+                            seatsToUpdate.add(seat);
                         });
             }
+            seatRepository.saveAllAndFlush(seatsToUpdate);
             // 첫 번째 패스 플레이어가 다음 라운드 선
             UUID firstPassedPlayerId = passes.get(0).getPlayerId();
             seatRepository.findByGameIdAndPlayerId(gameId, firstPassedPlayerId)

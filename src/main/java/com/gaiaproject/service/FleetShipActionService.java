@@ -125,8 +125,12 @@ public class FleetShipActionService {
         if (buildingRepository.existsByGameIdAndHexQAndHexR(gameId, hexQ, hexR))
             return FleetShipActionResponse.fail(gameId, code, "이미 건물이 있는 위치입니다");
 
-        // 파워 2 소비 (가이아포머 재고 소비 없음)
+        // 파워 2 소비 + 가이아포머 재고 소모
+        if (ps.getStockGaiaformer() <= 0) {
+            return FleetShipActionResponse.fail(gameId, code, "사용 가능한 가이아포머가 없습니다");
+        }
         ps.spendPower(2);
+        ps.addGaiaformer(-1);  // 재고 소모, 광산 건설 시 반환
         playerStateRepository.save(ps);
 
         // 즉시 GAIA 변환
