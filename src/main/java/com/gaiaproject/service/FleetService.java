@@ -69,6 +69,18 @@ public class FleetService {
         if (qicUsed > 0) {
             playerState.spendQic(qicUsed);
         }
+        // 네블라/아이타: 우주선 입장 시 파워 토큰 1개 영구 소각 (bowl1→2→3 순)
+        var faction = playerState.getFactionType();
+        if (faction == com.gaiaproject.domain.enumtype.player.FactionType.NEVLAS
+                || faction == com.gaiaproject.domain.enumtype.player.FactionType.ITARS) {
+            int total = playerState.getPowerBowl1() + playerState.getPowerBowl2() + playerState.getPowerBowl3();
+            if (total <= 0) {
+                return PlaceFleetProbeResponse.fail(gameId, playerId, "파워 토큰이 부족하여 함대에 입장할 수 없습니다");
+            }
+            if (playerState.getPowerBowl1() > 0) playerState.removePowerFromBowl1(1);
+            else if (playerState.getPowerBowl2() > 0) playerState.removePowerFromBowl2(1);
+            else playerState.removePowerFromBowl3(1);
+        }
         // 2, 3번째 입장: 파워 2 순환 / 4번째 입장: 파워 3 순환
         if (slotIndex == 1 || slotIndex == 2) {
             playerState.chargePower(2);

@@ -124,19 +124,21 @@ public class FreeConvertService {
                 }
                 // 네블라 PI: 3구역 파워 1개 = 2파워 (2개 소모 = 4파워)
                 case "NEVLAS_4P_ORE_CREDIT" -> {
-                    // 4파워 = 3구역 2개 소모 → 1광석 + 1크레딧
+                    // 네블라 PI: bowl3 토큰 2개 직접 차감 (spendPower 우회) → bowl1로 이동
                     if (ps.getPowerBowl3() < 2) throw new IllegalStateException("3구역 파워 2개 필요");
-                    ps.spendPower(2); // bowl3에서 2개 → bowl1로
+                    ps.removePowerFromBowl3(2);
+                    ps.addPowerToBowl1(2);
                     ps.addOre(1);
                     ps.addCredit(1);
-                    log.info("[FREE] 네블라 PI 4파워→1광석+1크레딧: player={}", playerId);
+                    log.info("[FREE] 네블라 PI 4파워(2토큰)→1광석+1크레딧: player={}", playerId);
                 }
                 case "NEVLAS_4P_ORE2" -> {
-                    // 4파워 = 3구역 2개 소모 → 2광석
+                    // 네블라 PI: bowl3 토큰 2개 직접 차감 → bowl1로 이동
                     if (ps.getPowerBowl3() < 2) throw new IllegalStateException("3구역 파워 2개 필요");
-                    ps.spendPower(2); // bowl3에서 2개 → bowl1로
+                    ps.removePowerFromBowl3(2);
+                    ps.addPowerToBowl1(2);
                     ps.addOre(2);
-                    log.info("[FREE] 네블라 PI 4파워→2광석: player={}", playerId);
+                    log.info("[FREE] 네블라 PI 4파워(2토큰)→2광석: player={}", playerId);
                 }
                 // 네블라 기본 능력: 3구역 토큰 1개 → 가이아 구역 + 지식 1
                 case "NEVLAS_POWER3_TO_GAIA_KNOWLEDGE" -> {
