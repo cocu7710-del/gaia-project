@@ -113,7 +113,9 @@ public class FederationFormService {
 
         // 토큰 배치 금지 헥스: 행성 + 기존 연방 + 기존 연방 인접
         Set<String> blockedHexes = buildBlockedHexes(gameId, playerId, isIvits);
+        log.info("[FEDERATION_VALIDATE] blockedHexes count={}, buildingHexes={}", blockedHexes.size(), buildingHexes);
         int minTokens = calcMinTokensToConnect(buildingHexes, gameId, blockedHexes, buildingSet);
+        log.info("[FEDERATION_VALIDATE] minTokens={}", minTokens);
 
         return Map.of("success", true, "totalPower", totalPower, "minTokens", minTokens, "groups", groups);
     }
