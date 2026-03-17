@@ -81,12 +81,6 @@ public class IncomeService {
             player.returnConvertedGaiaformers();   // 발타크 변환 가이아포머 반환
             resetTechTileActions(gameId, player.getPlayerId()); // ACTION 타일 초기화
             applyTerransGaiaIncome(player);        // 테란 PI: 가이아 구역 파워 → 자원
-            // 글린: QIC 아카데미 건설 여부 플래그 설정 (addQic에서 사용)
-            if (player.getFactionType() == FactionType.GLEENS || (player.getFactionType() == null)) {
-                boolean hasQicAcad = gameBuildingRepository.countByGameIdAndPlayerIdAndBuildingTypeAndAcademyType(
-                        gameId, player.getPlayerId(), BuildingType.ACADEMY, AcademyType.QIC) > 0;
-                player.setGleensHasQicAcademy(hasQicAcad);
-            }
             applyIncomeToPlayer(gameId, player, economyOption);
             playerStateRepository.saveAndFlush(player);  // 명시적 저장 + 즉시 반영
         }

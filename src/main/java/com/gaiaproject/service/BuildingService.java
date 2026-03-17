@@ -305,8 +305,14 @@ public class BuildingService {
 
         // 건물 업그레이드
         if (targetType == BuildingType.ACADEMY && request.academyType() != null) {
-            building.upgradeToAcademy(
-                com.gaiaproject.domain.enumtype.building.AcademyType.valueOf(request.academyType()));
+            var acType = com.gaiaproject.domain.enumtype.building.AcademyType.valueOf(request.academyType());
+            building.upgradeToAcademy(acType);
+            // 글린: QIC 아카데미 건설 시 QIC→ORE 변환 해제
+            if (acType == com.gaiaproject.domain.enumtype.building.AcademyType.QIC
+                    && playerState.getFactionType() == FactionType.GLEENS) {
+                playerState.setGleensHasQicAcademy(true);
+                gamePlayerStateRepository.save(playerState);
+            }
         } else {
             building.upgrade(targetType);
         }

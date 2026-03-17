@@ -194,9 +194,14 @@ public class GaiaformingService {
         List<GamePlayerState> players = playerStateRepository.findByGameId(gameId);
         for (GamePlayerState player : players) {
             if (player.getGaiaPower() > 0) {
+                // factionType null일 경우 seat에서 조회하여 설정 (테란 bowl2 복귀 판단용)
+                if (player.getFactionType() == null) {
+                    gameSeatRepository.findByGameIdAndSeatNo(gameId, player.getSeatNo())
+                        .ifPresent(s -> player.setFactionType(s.getFactionType()));
+                }
                 player.returnGaiaPower();
                 playerStateRepository.save(player);
-                log.info("가이아 파워 복귀: game={}, player={}", gameId, player.getPlayerId());
+                log.info("가이아 파워 복귀: game={}, player={}, faction={}", gameId, player.getPlayerId(), player.getFactionType());
             }
         }
     }
@@ -206,6 +211,10 @@ public class GaiaformingService {
         List<GamePlayerState> players = playerStateRepository.findByGameId(gameId);
         for (GamePlayerState player : players) {
             if (player.getGaiaPower() > 0 && !player.getPlayerId().equals(excludePlayerId)) {
+                if (player.getFactionType() == null) {
+                    gameSeatRepository.findByGameIdAndSeatNo(gameId, player.getSeatNo())
+                        .ifPresent(s -> player.setFactionType(s.getFactionType()));
+                }
                 player.returnGaiaPower();
                 playerStateRepository.save(player);
             }

@@ -38,6 +38,8 @@ public class GamePlayerState {
     @Column(name = "faction_type", length = 30)
     private FactionType factionType;
 
+    public void setFactionType(FactionType ft) { this.factionType = ft; }
+
     // 자원
     @Column(name = "ore", nullable = false)
     private Integer ore = 0;
@@ -161,14 +163,15 @@ public class GamePlayerState {
         this.knowledge = Math.min(15, this.knowledge + amount);
     }
 
-    /** 글린 전용 플래그: QIC 아카데미 건설 여부 (true면 QIC 정상 획득) */
-    @Transient
+    /** 글린 전용: QIC 아카데미 건설 여부 (DB 영속) */
+    @Column(name = "gleens_has_qic_academy", nullable = false)
     private boolean gleensHasQicAcademy = false;
+
     public void setGleensHasQicAcademy(boolean v) { this.gleensHasQicAcademy = v; }
 
     public void addQic(int amount) {
+        // 글린: QIC 아카데미 건설 전까지 모든 QIC → ORE 자동 변환
         if (factionType == com.gaiaproject.domain.enumtype.player.FactionType.GLEENS && !gleensHasQicAcademy) {
-            // QIC 아카데미 건설 전: QIC → 광석 자동 변환
             this.ore = Math.min(15, this.ore + amount);
             return;
         }
