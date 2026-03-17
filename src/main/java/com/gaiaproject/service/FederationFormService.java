@@ -111,10 +111,10 @@ public class FederationFormService {
         for (int[] h : buildingHexes) buildingSet.add(h[0] + "," + h[1]);
         int groups = countConnectedGroups(buildingSet);
 
-        // 토큰 배치 금지 헥스: 행성 + 기존 연방 + 기존 연방 인접
-        Set<String> blockedHexes = buildBlockedHexes(gameId, playerId, isIvits);
-        log.info("[FEDERATION_VALIDATE] blockedHexes count={}, buildingHexes={}", blockedHexes.size(), buildingHexes);
-        int minTokens = calcMinTokensToConnect(buildingHexes, gameId, blockedHexes, buildingSet);
+        // 토큰 배치 가능 헥스 (EMPTY + 맵 존재 + 연방 인접 아님)
+        Set<String> allowedHexes = buildAllowedHexes(gameId, playerId, isIvits);
+        log.info("[FEDERATION_VALIDATE] allowedHexes count={}, buildings={}", allowedHexes.size(), buildingHexes.size());
+        int minTokens = calcMinTokensToConnect(buildingHexes, gameId, allowedHexes, buildingSet);
         log.info("[FEDERATION_VALIDATE] minTokens={}", minTokens);
 
         return Map.of("success", true, "totalPower", totalPower, "minTokens", minTokens, "groups", groups);
@@ -129,7 +129,7 @@ public class FederationFormService {
     }
 
     private int calcMinTokensToConnect(List<int[]> buildingHexes, UUID gameId,
-                                         Set<String> blockedHexes, Set<String> buildingHexSet) {
+                                         Set<String> allowedHexes, Set<String> buildingHexSet) {
         if (buildingHexes.size() <= 1) return 0;
 
         int n = buildingHexes.size();
@@ -137,7 +137,7 @@ public class FederationFormService {
         int[][] dist = new int[n][n];
         for (int i = 0; i < n; i++) {
             for (int j = i + 1; j < n; j++) {
-                int d = bfsDistance(buildingHexes.get(i), buildingHexes.get(j), blockedHexes, buildingHexSet);
+                int d = bfsDistance(buildingHexes.get(i), buildingHexes.get(j), allowedHexes, buildingHexSet);
                 dist[i][j] = d;
                 dist[j][i] = d;
             }
@@ -170,40 +170,35 @@ public class FederationFormService {
     }
 
     /**
-     * 토큰 배치 금지 헥스 구성
-     * 1. 행성이 있는 헥스 (EMPTY가 아닌 모든 헥스)
-     * 2. 기존 연방 헥스 (건물 + 토큰) — 하이브 제외
-     * 3. 기존 연방 헥스의 인접 헥스 — 하이브 제외
+     * 토큰 배치 가능 헥스 구성 (EMPTY + 맵에 존재 + 기존 연방 인접 아님)
      */
-    private Set<String> buildBlockedHexes(UUID gameId, UUID playerId, boolean isIvits) {
-        Set<String> blocked = new HashSet<>();
+    private Set<String> buildAllowedHexes(UUID gameId, UUID playerId, boolean isIvits) {
+        Set<String> allowed = new HashSet<>();
         int[][] dirs = {{1,0},{-1,0},{0,1},{0,-1},{1,-1},{-1,1}};
 
-        // 1. 행성 헥스 (EMPTY가 아닌 모든 헥스)
+        // 맵에 존재하는 EMPTY 헥스만 허용
         List<GameHex> allHexes = hexRepository.findByGameId(gameId);
         for (GameHex hex : allHexes) {
-            String pt = hex.getPlanetType().name();
-            if (!"EMPTY".equals(pt)) {
-                blocked.add(hex.getHexQ() + "," + hex.getHexR());
+            if ("EMPTY".equals(hex.getPlanetType().name())) {
+                allowed.add(hex.getHexQ() + "," + hex.getHexR());
             }
         }
 
-        // 2+3. 기존 연방 헥스 + 인접 (하이브 제외)
+        // 기존 연방 헥스 + 인접 제거 (하이브 제외)
         if (!isIvits) {
             Set<String> fedHexes = getUsedFederationHexes(gameId, playerId);
-            blocked.addAll(fedHexes);
-            // 인접 헥스도 금지
+            allowed.removeAll(fedHexes);
             for (String fedHex : fedHexes) {
                 String[] parts = fedHex.split(",");
                 int q = Integer.parseInt(parts[0]);
                 int r = Integer.parseInt(parts[1]);
                 for (int[] d : dirs) {
-                    blocked.add((q + d[0]) + "," + (r + d[1]));
+                    allowed.remove((q + d[0]) + "," + (r + d[1]));
                 }
             }
         }
 
-        return blocked;
+        return allowed;
     }
 
     /**
@@ -211,7 +206,7 @@ public class FederationFormService {
      * 토큰 배치 가능 조건: EMPTY 헥스만 (행성/소행성/초월행성 불가), 기존 연방 헥스 및 인접 불가
      * 건물 헥스는 통과 가능 (연결 대상이므로)
      */
-    private int bfsDistance(int[] from, int[] to, Set<String> blockedHexes, Set<String> buildingHexSet) {
+    private int bfsDistance(int[] from, int[] to, Set<String> allowedHexes, Set<String> buildingHexSet) {
         String startKey = from[0] + "," + from[1];
         String endKey = to[0] + "," + to[1];
         if (startKey.equals(endKey)) return 0;
@@ -250,10 +245,8 @@ public class FederationFormService {
                     continue;
                 }
 
-                // 금지 헥스 (기존 연방 + 인접): 통과 불가
-                if (blockedHexes.contains(neighbor)) continue;
-
-                // 토큰 배치 가능 체크는 호출부에서 blockedHexes에 포함시킴
+                // 허용된 헥스만 통과 가능 (EMPTY + 맵 존재 + 연방 인접 아님)
+                if (!allowedHexes.contains(neighbor)) continue;
                 visited.put(neighbor, currentDist + 1);
                 queue.add(neighbor);
             }
