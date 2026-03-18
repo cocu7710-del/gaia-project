@@ -9,6 +9,7 @@ import com.gaiaproject.domain.entity.game.Game;
 import com.gaiaproject.domain.entity.player.GamePlayerFederationToken;
 import com.gaiaproject.domain.entity.player.GamePlayerState;
 import com.gaiaproject.domain.enumtype.building.BuildingType;
+import com.gaiaproject.domain.enumtype.federation.FederationActionType;
 import com.gaiaproject.domain.enumtype.federation.FederationTileType;
 import com.gaiaproject.domain.enumtype.player.FactionType;
 import com.gaiaproject.dto.request.FormFederationRequest;
@@ -45,6 +46,7 @@ public class FederationFormService {
     private final GameFederationOfferRepository federationOfferRepository;
     private final GamePlayerFederationTokenRepository playerFederationTokenRepository;
     private final ActionService actionService;
+    private final GameWebSocketService webSocketService;
     private final GamePlayerTechTileRepository playerTechTileRepository;
     private final RoundScoringService roundScoringService;
     private final com.gaiaproject.repository.map.GameHexRepository hexRepository;
@@ -519,6 +521,14 @@ public class FederationFormService {
         playerStateRepository.save(ps);
 
         log.info("[FEDERATION] 일반 연방: game={}, player={}, tile={}, buildings={}, tokens={}", gameId, playerId, tileType, buildingHexes.size(), tokenCount);
+
+        // 특수 액션 타일이면 턴을 넘기지 않고 후속 액션 브로드캐스트
+        if (tileType.hasSpecialAction() && tileType.getSpecialAction() == FederationActionType.TERRAFORM_3_PLACE_MINE) {
+            actionService.saveActionOnly(gameId, playerId, ActionType.FACTION_ABILITY, "{\"type\":\"FEDERATION\",\"tileCode\":\"" + tileType.name() + "\"}");
+            webSocketService.broadcastDeferredActionRequired(gameId, playerId, "PLACE_MINE_TERRAFORM_3", "{\"terraformDiscount\":3}");
+            return FormFederationResponse.success(gameId, tileType.name(), null);
+        }
+
         ConfirmActionResponse result = actionService.saveActionAndNextTurn(gameId, playerId, ActionType.FACTION_ABILITY, "{\"type\":\"FEDERATION\",\"tileCode\":\"" + tileType.name() + "\"}");
         return FormFederationResponse.success(gameId, tileType.name(), result.nextTurnSeatNo());
     }
@@ -622,6 +632,14 @@ public class FederationFormService {
 
         log.info("[FEDERATION-IVITS] 연방: game={}, player={}, tile={}, newBuildings={}, qicTokens={}, totalPower={}",
                 gameId, playerId, tileType, buildingHexes.size(), tokenCount, totalPowerValue);
+
+        // 특수 액션 타일이면 턴을 넘기지 않고 후속 액션 브로드캐스트
+        if (tileType.hasSpecialAction() && tileType.getSpecialAction() == FederationActionType.TERRAFORM_3_PLACE_MINE) {
+            actionService.saveActionOnly(gameId, playerId, ActionType.FACTION_ABILITY, "{\"type\":\"FEDERATION_IVITS\",\"tileCode\":\"" + tileType.name() + "\"}");
+            webSocketService.broadcastDeferredActionRequired(gameId, playerId, "PLACE_MINE_TERRAFORM_3", "{\"terraformDiscount\":3}");
+            return FormFederationResponse.success(gameId, tileType.name(), null);
+        }
+
         ConfirmActionResponse result = actionService.saveActionAndNextTurn(gameId, playerId, ActionType.FACTION_ABILITY, "{\"type\":\"FEDERATION_IVITS\",\"tileCode\":\"" + tileType.name() + "\"}");
         return FormFederationResponse.success(gameId, tileType.name(), result.nextTurnSeatNo());
     }
