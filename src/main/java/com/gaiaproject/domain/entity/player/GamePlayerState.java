@@ -179,9 +179,8 @@ public class GamePlayerState {
     }
 
     public void chargePower(int amount) {
-        // 파워 차징 로직 (Bowl I → II → III)
+        // 파워 차징 로직 (Bowl I → II → III, 방금 이동한 토큰도 같은 순환에서 사용 가능)
         int remaining = amount;
-        int originalBowl2 = powerBowl2; // Bowl I → II 이동 전 기존 Bowl II 값 저장
 
         // Bowl I → Bowl II
         int fromBowl1 = Math.min(powerBowl1, remaining);
@@ -189,9 +188,9 @@ public class GamePlayerState {
         powerBowl2 += fromBowl1;
         remaining -= fromBowl1;
 
-        // Bowl II → Bowl III (기존 Bowl II 토큰만 사용, 방금 이동한 토큰 제외)
+        // Bowl II → Bowl III (방금 bowl1에서 올라온 토큰 포함)
         if (remaining > 0) {
-            int fromBowl2 = Math.min(originalBowl2, remaining);
+            int fromBowl2 = Math.min(powerBowl2, remaining);
             powerBowl2 -= fromBowl2;
             powerBowl3 += fromBowl2;
         }

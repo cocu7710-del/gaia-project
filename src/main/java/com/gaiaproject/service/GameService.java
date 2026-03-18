@@ -703,7 +703,7 @@ public class GameService {
             GameSeat seat = GameSeat.create(
                     gameId,
                     seatNo,      // 좌석 번호
-                    seatNo,      // 턴 순서
+                    0,           // 턴 순서 (0=미패스, 패스 시 1~4)
                     faction      // 종족
             );
 
