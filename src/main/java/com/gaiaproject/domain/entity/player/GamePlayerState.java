@@ -140,6 +140,14 @@ public class GamePlayerState {
     @Column(name = "tinkeroids_current_action", length = 50)
     private String tinkeroidsCurrentAction;
 
+    // 연방 형성 횟수 (모든 종족 공통)
+    @Column(name = "federation_count", nullable = false)
+    private int federationCount = 0;
+
+    public void incrementFederationCount() {
+        this.federationCount++;
+    }
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 

@@ -77,6 +77,16 @@ public class ActionController {
         return ResponseEntity.ok(buildingService.placeMineInPlay(roomId, request));
     }
 
+    @Operation(summary = "검은행성 배치 (거리 트랙 5단계)")
+    @PostMapping("/lost-planet")
+    public ResponseEntity<PlaceMinePlayResponse> placeLostPlanet(
+            @PathVariable UUID roomId,
+            @RequestBody PlaceMinePlayRequest request
+    ) {
+        log.info("검은행성 배치: roomId={}, playerId={}, ({},{})", roomId, request.playerId(), request.hexQ(), request.hexR());
+        return ResponseEntity.ok(buildingService.placeLostPlanet(roomId, request.playerId(), request.hexQ(), request.hexR()));
+    }
+
     @Operation(summary = "건물 업그레이드")
     @PostMapping("/upgrade")
     public ResponseEntity<UpgradeBuildingResponse> upgradeBuilding(

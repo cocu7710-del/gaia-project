@@ -62,5 +62,8 @@ public record PlayerStateResponse(
         Boolean hasQicAcademy,
 
         // QIC 아카데미 액션 사용 여부 (라운드당 1회)
-        Boolean qicAcademyActionUsed
+        Boolean qicAcademyActionUsed,
+
+        // 팅커로이드: 현재 라운드 선택된 액션 코드
+        String tinkeroidsCurrentAction
 ) {}

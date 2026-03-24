@@ -357,8 +357,11 @@ public class FactionAbilityService {
             case "TINK_KNOWLEDGE_3" -> ps.addKnowledge(3);
             case "TINK_QIC_2" -> { ps.addQic(1); ps.addQic(1); }
             case "TINK_TERRAFORM_1", "TINK_TERRAFORM_3" -> {
-                // 테라포밍은 FE에서 선언형으로 처리 (광산 건설과 함께 확정)
-                // 여기서는 사용 마킹만
+                // 테라포밍: 사용 마킹만 하고 턴 넘기지 않음 (후속 광산 건설에서 턴 종료)
+                ps.useTinkeroidsCurrentAction();
+                playerStateRepository.save(ps);
+                log.info("[TINKEROIDS] 테라포밍 액션 선언: player={}, action={}", playerId, currentAction);
+                return FactionAbilityResponse.success(gameId, code, null);
             }
             default -> { return FactionAbilityResponse.fail(gameId, code, "알 수 없는 액션: " + currentAction); }
         }

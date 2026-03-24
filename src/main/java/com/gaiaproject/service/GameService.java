@@ -779,7 +779,8 @@ public class GameService {
                         p.getBaltaksConvertedGaiaformers(),
                         p.getPermanentlyRemovedGaiaformers(),
                         hasQicAcademy,
-                        p.isQicAcademyActionUsed()
+                        p.isQicAcademyActionUsed(),
+                        p.getTinkeroidsCurrentAction()
                     );
                 })
                 .collect(Collectors.toList());

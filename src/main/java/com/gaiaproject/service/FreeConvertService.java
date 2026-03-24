@@ -132,13 +132,13 @@ public class FreeConvertService {
                     ps.addCredit(1);
                     log.info("[FREE] 네블라 PI 4파워(2토큰)→1광석+1크레딧: player={}", playerId);
                 }
-                case "NEVLAS_4P_ORE2" -> {
-                    // 네블라 PI: bowl3 토큰 2개 직접 차감 → bowl1로 이동
-                    if (ps.getPowerBowl3() < 2) throw new IllegalStateException("3구역 파워 2개 필요");
-                    ps.removePowerFromBowl3(2);
-                    ps.addPowerToBowl1(2);
+                case "NEVLAS_6P_ORE2" -> {
+                    // 네블라 PI: bowl3 토큰 3개 직접 차감 → bowl1로 이동 (6파워 = 3토큰)
+                    if (ps.getPowerBowl3() < 3) throw new IllegalStateException("3구역 파워 3개 필요");
+                    ps.removePowerFromBowl3(3);
+                    ps.addPowerToBowl1(3);
                     ps.addOre(2);
-                    log.info("[FREE] 네블라 PI 4파워(2토큰)→2광석: player={}", playerId);
+                    log.info("[FREE] 네블라 PI 6파워(3토큰)→2광석: player={}", playerId);
                 }
                 // 네블라 기본 능력: 3구역 토큰 1개 → 가이아 구역 + 지식 1
                 case "NEVLAS_POWER3_TO_GAIA_KNOWLEDGE" -> {

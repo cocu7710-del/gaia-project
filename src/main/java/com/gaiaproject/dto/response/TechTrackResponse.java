@@ -38,9 +38,10 @@ public record TechTrackResponse(
             int position,           // 배치 위치 (1~12)
             String abilityType,     // ACTION, INCOME, IMMEDIATE, PASSIVE
             String description,     // 능력 설명
-            boolean isTaken,        // 플레이어가 가져갔는지
-            String takenByPlayerId, // 가져간 플레이어 UUID (null이면 미획득)
-            boolean isActionUsed    // 이번 라운드 ACTION 사용 여부
+            boolean isTaken,        // 플레이어가 가져갔는지 (고급 타일용)
+            String takenByPlayerId, // 고급 타일: 가져간 플레이어 UUID
+            boolean isActionUsed,   // 이번 라운드 ACTION 사용 여부
+            List<String> ownerPlayerIds // 기본 타일: 보유 플레이어 UUID 목록
     ) {}
 
     /**

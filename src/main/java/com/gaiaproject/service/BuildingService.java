@@ -372,19 +372,9 @@ public class BuildingService {
             log.warn("[TILE_ACQUIRE] 스킵 - techTileCode 미전달: techTileCode={}", request.techTileCode());
         }
 
-        // TERRAFORM_2_PLACE_MINE 타일 여부 확인
+        // TERRAFORM_2_PLACE_MINE은 TechTileService.applyImmediateTileEffect에서 처리
         String leechFollowUpType = null;
         String leechFollowUpData = null;
-        if (isTileEligible && request.techTileCode() != null && !request.techTileCode().isBlank()) {
-            try {
-                com.gaiaproject.domain.enumtype.tech.TechTileCode tileCode =
-                    com.gaiaproject.domain.enumtype.tech.TechTileCode.valueOf(request.techTileCode());
-                if ("TERRAFORM_2_PLACE_MINE".equals(tileCode.getAbility().getSpecialEffect())) {
-                    leechFollowUpType = "PLACE_MINE_TERRAFORM_2";
-                    leechFollowUpData = "{\"terraformDiscount\":2}";
-                }
-            } catch (Exception ignored) {}
-        }
 
         // 액션 저장 (턴 진행은 리치 해소 후)
         String actionData = String.format("{\"hexQ\":%d,\"hexR\":%d,\"from\":\"%s\",\"to\":\"%s\"}", request.hexQ(), request.hexR(), fromType, targetType);
@@ -717,5 +707,72 @@ public class BuildingService {
                 .findByGameIdAndPlayerIdAndIsCovered(gameId, playerId, false)
                 .stream()
                 .anyMatch(t -> tileCode.equals(t.getTechTileCode()));
+    }
+
+    /**
+     * 검은행성(LOST_PLANET) 배치 — 거리 트랙 5단계 도달 보상
+     * - EMPTY 헥스에만 배치 가능
+     * - 연방 토큰 위에 불가
+     * - 광산 재고 감소 없음
+     * - 광산 취급 (파워값 1, 연방 참여, 리치 발생, 라운드 점수)
+     * - 해당 헥스의 planetType을 LOST_PLANET으로 변경
+     */
+    @Transactional
+    public PlaceMinePlayResponse placeLostPlanet(UUID gameId, UUID playerId, int hexQ, int hexR) {
+        Game game = gameRepository.findById(gameId)
+                .orElseThrow(() -> new IllegalArgumentException("게임을 찾을 수 없습니다"));
+
+        GamePlayerState ps = gamePlayerStateRepository.findByGameIdAndPlayerId(gameId, playerId)
+                .orElseThrow(() -> new IllegalStateException("플레이어 상태를 찾을 수 없습니다"));
+
+        // 헥스 검증: EMPTY만
+        GameHex hex = gameHexRepository.findByGameIdAndHexQAndHexR(gameId, hexQ, hexR)
+                .orElseThrow(() -> new IllegalArgumentException("헥스를 찾을 수 없습니다: (" + hexQ + "," + hexR + ")"));
+        if (hex.getPlanetType() != PlanetType.EMPTY) {
+            return PlaceMinePlayResponse.fail(gameId, "빈 헥스에만 검은행성을 배치할 수 있습니다");
+        }
+
+        // 기존 건물 없는지 확인
+        if (gameBuildingRepository.findFirstByGameIdAndHexQAndHexRAndIsLantidsMine(gameId, hexQ, hexR, false).isPresent()) {
+            return PlaceMinePlayResponse.fail(gameId, "이미 건물이 있는 헥스입니다");
+        }
+
+        // 연방 토큰 위 불가
+        var allGroups = federationFormService.getFederationGroups(gameId);
+        boolean hasFedToken = allGroups.stream()
+                .flatMap(g -> g.tokenHexes().stream())
+                .anyMatch(t -> t[0] == hexQ && t[1] == hexR);
+        if (hasFedToken) {
+            return PlaceMinePlayResponse.fail(gameId, "연방 토큰 위에 검은행성을 배치할 수 없습니다");
+        }
+
+        // 헥스 planetType 변경 → LOST_PLANET
+        hex.setPlanetType(PlanetType.LOST_PLANET);
+        gameHexRepository.save(hex);
+
+        // 건물 배치 (LOST_PLANET_MINE)
+        GameBuilding building = GameBuilding.place(gameId, playerId, hexQ, hexR, BuildingType.LOST_PLANET_MINE);
+        gameBuildingRepository.save(building);
+
+        // VP +6 (원시행성 건설 보상 — 검은행성도 동일)
+        ps.addVP(6);
+        gamePlayerStateRepository.save(ps);
+
+        // 라운드 점수: 광산 건설 취급
+        if (game.getCurrentRound() != null) {
+            roundScoringService.award(gameId, game.getCurrentRound(), ps, RoundScoringEvent.MINE_PLACED, 1);
+        }
+
+        log.info("[LOST_PLANET] 검은행성 배치: game={}, player={}, hex=({},{})", gameId, playerId, hexQ, hexR);
+
+        // 액션 저장 (턴 유지 — 리치 해소 후 턴 진행)
+        actionService.saveActionOnly(gameId, playerId, ActionType.PLACE_MINE,
+                String.format("{\"hexQ\":%d,\"hexR\":%d,\"type\":\"LOST_PLANET\"}", hexQ, hexR));
+
+        // 리치 처리
+        List<GameBuilding> allBuildings = gameBuildingRepository.findByGameId(gameId);
+        powerLeechService.createBatchAndProcess(game, playerId, hexQ, hexR, BuildingType.LOST_PLANET_MINE, allBuildings, null, null);
+
+        return PlaceMinePlayResponse.success(gameId, hexQ, hexR, 0);
     }
 }

@@ -78,6 +78,11 @@ public class GameHex {
         this.planetType = PlanetType.GAIA;
     }
 
+    /** 행성 타입 변경 (검은행성 배치 등) */
+    public void setPlanetType(PlanetType planetType) {
+        this.planetType = planetType;
+    }
+
     /**
      * 헥스 생성
      */

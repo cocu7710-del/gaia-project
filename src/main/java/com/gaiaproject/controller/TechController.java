@@ -25,6 +25,7 @@ import java.util.UUID;
 public class TechController {
 
     private final TechTileService techTileService;
+    private final com.gaiaproject.repository.tech.GamePlayerTechTileRepository playerTechTileRepository;
 
     @Operation(summary = "기술 트랙 및 타일 정보 조회")
     @GetMapping
@@ -58,11 +59,19 @@ public class TechController {
         // 2. 이번 라운드 ACTION 사용 완료 타일 코드
         java.util.Set<String> actionUsedCodes = techTileService.getActionUsedTileCodes(roomId);
 
-        // 3. 기본 기술 타일 조회
+        // 3. 기본 기술 타일 조회 + 소유자 목록
         List<GameTechOffer> techOffers = techTileService.getTechTiles(roomId);
+        // GamePlayerTechTile에서 기본 타일 소유자 매핑 (tileCode → playerIds)
+        var allPlayerTiles = playerTechTileRepository.findByGameId(roomId);
+        java.util.Map<String, List<String>> ownersByTileCode = new java.util.HashMap<>();
+        for (var pt : allPlayerTiles) {
+            ownersByTileCode.computeIfAbsent(pt.getTechTileCode(), k -> new ArrayList<>())
+                    .add(pt.getPlayerId().toString());
+        }
         List<TechTileInfo> basicTiles = techOffers.stream()
                 .map(offer -> {
                     TechTileCode tileCode = offer.getTechTileCode();
+                    List<String> owners = ownersByTileCode.getOrDefault(tileCode.name(), List.of());
                     return new TechTileInfo(
                             tileCode.name(),
                             offer.getTechTrack(),
@@ -71,7 +80,8 @@ public class TechController {
                             tileCode.getAbility().getDescription(),
                             offer.getTakenByPlayerId() != null,
                             offer.getTakenByPlayerId() != null ? offer.getTakenByPlayerId().toString() : null,
-                            actionUsedCodes.contains(tileCode.name())
+                            actionUsedCodes.contains(tileCode.name()),
+                            owners
                     );
                 })
                 .toList();

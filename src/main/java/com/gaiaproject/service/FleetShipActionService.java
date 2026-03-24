@@ -50,6 +50,7 @@ public class FleetShipActionService {
     private final TechTileService techTileService;
     private final RoundScoringService roundScoringService;
     private final ArtifactService artifactService;
+    private final PowerLeechService powerLeechService;
     private final com.gaiaproject.repository.game.GameRepository gameRepository;
 
     /** 함대 선박 특수 액션 실행 */
@@ -261,9 +262,21 @@ public class FleetShipActionService {
         building.upgrade(BuildingType.TRADING_STATION);
         buildingRepository.save(building);
 
-        ConfirmActionResponse result = endTurn(gameId, playerId, code);
+        // 라운드 점수: 교역소 건설
+        var game = gameRepository.findById(gameId).orElseThrow();
+        if (game.getCurrentRound() != null) {
+            roundScoringService.award(gameId, game.getCurrentRound(), ps,
+                    com.gaiaproject.domain.enumtype.rounds.RoundScoringEvent.TRADING_STATION_BUILT, 1);
+        }
+
+        // 액션 저장 + 파워 리치 처리
+        actionService.saveActionOnly(gameId, playerId, com.gaiaproject.domain.enumtype.action.ActionType.FLEET_SHIP_ACTION,
+                String.format("{\"actionCode\":\"%s\",\"hexQ\":%d,\"hexR\":%d}", code, hexQ, hexR));
+        List<GameBuilding> allBuildings = buildingRepository.findByGameId(gameId);
+        powerLeechService.createBatchAndProcess(game, playerId, hexQ, hexR, BuildingType.TRADING_STATION, allBuildings, null, null);
+
         log.info("[함대] {}: game={}, player={}, hex=({},{})", code, gameId, playerId, hexQ, hexR);
-        return FleetShipActionResponse.success(gameId, code, 0, result.nextTurnSeatNo(), true);
+        return FleetShipActionResponse.success(gameId, code, 0, null, true);
     }
 
     /** REBELLION_CONVERT: 지식 2 → QIC 1 + 크레딧 2 */
@@ -315,19 +328,30 @@ public class FleetShipActionService {
         building.upgrade(BuildingType.RESEARCH_LAB);
         buildingRepository.save(building);
 
+        var game = gameRepository.findById(gameId).orElseThrow();
+
         // 기술 타일 획득 (연구소 업그레이드이므로)
         if (tileCode != null && !tileCode.isBlank()) {
             try {
-                var game = gameRepository.findById(gameId).orElseThrow();
                 techTileService.acquireTileForBuilding(gameId, playerId, tileCode, techTrackCode, game.getEconomyTrackOption());
             } catch (IllegalStateException e) {
                 return FleetShipActionResponse.fail(gameId, code, "기술 타일 획득 실패: " + e.getMessage());
             }
         }
 
-        ConfirmActionResponse result = endTurn(gameId, playerId, code);
+        // 라운드 점수: 연구소 건설
+        if (game.getCurrentRound() != null) {
+            // 연구소 건설이지만 별도 RoundScoringEvent 없으므로 생략 가능
+        }
+
+        // 액션 저장 + 파워 리치 처리 (턴 진행은 리치 해소 후)
+        actionService.saveActionOnly(gameId, playerId, com.gaiaproject.domain.enumtype.action.ActionType.FLEET_SHIP_ACTION,
+                String.format("{\"actionCode\":\"%s\",\"hexQ\":%d,\"hexR\":%d}", code, hexQ, hexR));
+        List<GameBuilding> allBuildings = buildingRepository.findByGameId(gameId);
+        powerLeechService.createBatchAndProcess(game, playerId, hexQ, hexR, BuildingType.RESEARCH_LAB, allBuildings, null, null);
+
         log.info("[함대] {}: game={}, player={}, hex=({},{})", code, gameId, playerId, hexQ, hexR);
-        return FleetShipActionResponse.success(gameId, code, 0, result.nextTurnSeatNo(), true);
+        return FleetShipActionResponse.success(gameId, code, 0, null, true);
     }
 
     /** TWILIGHT_NAV: 지식 1 소모, 다음 광산 건설 시 항법 거리 +3 (턴 종료 안 함) */

@@ -93,14 +93,21 @@ public class FederationFormService {
         boolean isXenosPi = ps.getFactionType() == FactionType.XENOS && ps.getStockPlanetaryInstitute() == 0;
         int requiredPower = isXenosPi ? 6 : 7;
         if (isIvits) {
+            // 카운터 기반: 다음 연방 목표 = (형성횟수+1)*7
+            int fedCount = ps.getFederationCount();
+            requiredPower = (fedCount + 1) * 7;
+            // totalPower = 선택한 건물 + 기존 연방 건물 전체 합산
             List<GameFederationGroup> existingGroups = federationGroupRepository.findByGameIdAndPlayerId(gameId, playerId);
             if (!existingGroups.isEmpty()) {
-                int existingPower = 0;
+                Set<String> selectedSet = new HashSet<>();
+                for (int[] hex : buildingHexes) selectedSet.add(hex[0] + "," + hex[1]);
                 for (GameFederationBuilding fb : federationBuildingRepository.findByFederationGroupId(existingGroups.get(0).getId())) {
-                    GameBuilding b = buildingRepository.findFirstByGameIdAndHexQAndHexRAndIsLantidsMine(gameId, fb.getHexQ(), fb.getHexR(), false).orElse(null);
-                    if (b != null) existingPower += buildingPowerValue(b.getBuildingType());
+                    String key = fb.getHexQ() + "," + fb.getHexR();
+                    if (!selectedSet.contains(key)) {
+                        GameBuilding b = buildingRepository.findFirstByGameIdAndHexQAndHexRAndIsLantidsMine(gameId, fb.getHexQ(), fb.getHexR(), false).orElse(null);
+                        if (b != null) totalPower += buildingPowerValue(b.getBuildingType());
+                    }
                 }
-                requiredPower = ((existingPower / 7) + 1) * 7 - existingPower;
             }
         }
 
@@ -513,6 +520,7 @@ public class FederationFormService {
         playerFederationTokenRepository.save(GamePlayerFederationToken.builder().gameId(gameId).playerId(playerId).federationTileType(tileType).build());
 
         ps.applyIncome(tileType.getImmediateReward());
+        ps.incrementFederationCount();
         // 라운드 점수: 연방 형성
         if (game.getCurrentRound() != null) {
             roundScoringService.award(gameId, game.getCurrentRound(), ps,
@@ -520,7 +528,7 @@ public class FederationFormService {
         }
         playerStateRepository.save(ps);
 
-        log.info("[FEDERATION] 일반 연방: game={}, player={}, tile={}, buildings={}, tokens={}", gameId, playerId, tileType, buildingHexes.size(), tokenCount);
+        log.info("[FEDERATION] 일반 연방 #{}: game={}, player={}, tile={}, buildings={}, tokens={}", ps.getFederationCount(), gameId, playerId, tileType, buildingHexes.size(), tokenCount);
 
         // 특수 액션 타일이면 턴을 넘기지 않고 후속 액션 브로드캐스트
         if (tileType.hasSpecialAction() && tileType.getSpecialAction() == FederationActionType.TERRAFORM_3_PLACE_MINE) {
@@ -573,23 +581,26 @@ public class FederationFormService {
         // 기존 연방 파워 합산
         int existingPowerValue = 0;
         if (existingGroup != null) {
+            Set<String> newBuildingSet = new HashSet<>();
+            for (int[] h : buildingHexes) newBuildingSet.add(h[0] + "," + h[1]);
             List<GameFederationBuilding> existingFedBuildings = federationBuildingRepository.findByFederationGroupId(existingGroup.getId());
             for (GameFederationBuilding fb : existingFedBuildings) {
-                GameBuilding b = buildingRepository.findFirstByGameIdAndHexQAndHexRAndIsLantidsMine(gameId, fb.getHexQ(), fb.getHexR(), false).orElse(null);
-                if (b != null) existingPowerValue += buildingPowerValue(b.getBuildingType(), gameId, playerId, b.isHasRing());
+                String key = fb.getHexQ() + "," + fb.getHexR();
+                if (!newBuildingSet.contains(key)) {
+                    GameBuilding b = buildingRepository.findFirstByGameIdAndHexQAndHexRAndIsLantidsMine(gameId, fb.getHexQ(), fb.getHexR(), false).orElse(null);
+                    if (b != null) existingPowerValue += buildingPowerValue(b.getBuildingType(), gameId, playerId, b.isHasRing());
+                }
             }
         }
 
         int totalPowerValue = existingPowerValue + newPowerValue;
 
-        // 첫 연방: 7 이상 필요
-        // 확장: 기존 파워에서 다음 7의 배수 도달 필요
-        int previousTiles = existingPowerValue / 7; // 이전에 획득한 타일 수
-        int newTiles = totalPowerValue / 7;         // 총 획득 가능한 타일 수
-        if (newTiles <= previousTiles) {
-            int nextThreshold = (previousTiles + 1) * 7;
+        // 카운터 기반: 다음 연방 목표 = (형성횟수+1)*7
+        int fedCount = ps.getFederationCount();
+        int requiredPower = (fedCount + 1) * 7;
+        if (totalPowerValue < requiredPower) {
             return FormFederationResponse.fail(gameId,
-                    "연방 파워가 부족합니다 (현재: " + totalPowerValue + ", 다음 목표: " + nextThreshold + ")");
+                    "연방 파워가 부족합니다 (현재: " + totalPowerValue + ", 다음 목표: " + requiredPower + ")");
         }
 
         // 연방 타일 검증
@@ -623,6 +634,7 @@ public class FederationFormService {
         playerFederationTokenRepository.save(GamePlayerFederationToken.builder().gameId(gameId).playerId(playerId).federationTileType(tileType).build());
 
         ps.applyIncome(tileType.getImmediateReward());
+        ps.incrementFederationCount();
         // 라운드 점수: 연방 형성
         if (game.getCurrentRound() != null) {
             roundScoringService.award(gameId, game.getCurrentRound(), ps,
@@ -630,8 +642,8 @@ public class FederationFormService {
         }
         playerStateRepository.save(ps);
 
-        log.info("[FEDERATION-IVITS] 연방: game={}, player={}, tile={}, newBuildings={}, qicTokens={}, totalPower={}",
-                gameId, playerId, tileType, buildingHexes.size(), tokenCount, totalPowerValue);
+        log.info("[FEDERATION-IVITS] 연방 #{}: game={}, player={}, tile={}, newBuildings={}, qicTokens={}, totalPower={}",
+                ps.getFederationCount(), gameId, playerId, tileType, buildingHexes.size(), tokenCount, totalPowerValue);
 
         // 특수 액션 타일이면 턴을 넘기지 않고 후속 액션 브로드캐스트
         if (tileType.hasSpecialAction() && tileType.getSpecialAction() == FederationActionType.TERRAFORM_3_PLACE_MINE) {

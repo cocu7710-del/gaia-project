@@ -55,6 +55,7 @@ public class TechTileService {
     private final com.gaiaproject.repository.federation.GameFederationGroupRepository federationGroupRepository;
     private final com.gaiaproject.repository.player.GamePlayerFederationTokenRepository playerFederationTokenRepository;
     private final com.gaiaproject.repository.federation.GameFederationOfferRepository federationOfferRepository;
+    private final GameWebSocketService webSocketService;
 
     /** 지식 트랙 전진 (지식 4 소모, PLAYING 페이즈) */
     public AdvanceTechResponse advanceTechTrack(UUID gameId, AdvanceTechRequest request) {
@@ -144,9 +145,11 @@ public class TechTileService {
         if (playerTechTileRepository.existsByGameIdAndPlayerIdAndTechTileCode(gameId, playerId, tileCode))
             throw new IllegalStateException("이미 보유 중인 기술 타일입니다: " + tileCode);
 
-        // 4. 타일 점유 처리
-        offer.take(playerId);
-        gameTechOfferRepository.save(offer);
+        // 4. 타일 점유 처리 (고급 타일만 — 기본 타일은 여러 명이 가질 수 있음)
+        if (isAdvanced) {
+            offer.take(playerId);
+            gameTechOfferRepository.save(offer);
+        }
 
         // 5. 플레이어 타일 기록
         playerTechTileRepository.save(GamePlayerTechTile.builder()
@@ -231,8 +234,8 @@ public class TechTileService {
                 log.info("[TILE_IMMEDIATE] KNOWLEDGE_PER_PLANET_TYPE: 행성 종류={}, 지식+={}", planetTypes.size(), planetTypes.size());
             }
             case "TERRAFORM_2_PLACE_MINE" -> {
-                // 테라포밍 2단계 후 광산 즉시 건설 → 별도 후속 액션 필요, 현재는 로그만
-                log.info("[TILE_IMMEDIATE] TERRAFORM_2_PLACE_MINE - 후속 광산 건설 액션 필요 (미구현), game={}, player={}", gameId, playerId);
+                // FE에서 pending 체인으로 처리 (업그레이드 확정 → 광산 배치 → 확정)
+                log.info("[TILE_IMMEDIATE] TERRAFORM_2_PLACE_MINE - FE pending 체인 처리, game={}, player={}", gameId, playerId);
             }
             default -> {
                 ability.applyTo(ps);
