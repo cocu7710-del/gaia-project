@@ -6,6 +6,7 @@ import com.gaiaproject.domain.entity.player.GamePlayerState;
 import com.gaiaproject.domain.entity.player.GamePlayerTechTile;
 import com.gaiaproject.domain.entity.tech.GameTechOffer;
 import com.gaiaproject.domain.enumtype.action.ActionType;
+import com.gaiaproject.domain.enumtype.action.VpCategory;
 import com.gaiaproject.domain.enumtype.building.BuildingType;
 import com.gaiaproject.domain.enumtype.player.PlanetType;
 import com.gaiaproject.dto.request.FleetShipActionRequest;
@@ -18,6 +19,10 @@ import com.gaiaproject.repository.player.GamePlayerStateRepository;
 import com.gaiaproject.repository.tech.GamePlayerTechTileRepository;
 import com.gaiaproject.repository.tech.GameTechOfferRepository;
 import com.gaiaproject.repository.player.GamePlayerFleetProbeRepository;
+import com.gaiaproject.repository.player.GamePlayerFederationTokenRepository;
+import com.gaiaproject.domain.enumtype.federation.FederationTileType;
+import com.gaiaproject.domain.enumtype.federation.FederationActionType;
+import com.gaiaproject.dto.ResourcesVo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -51,7 +56,11 @@ public class FleetShipActionService {
     private final RoundScoringService roundScoringService;
     private final ArtifactService artifactService;
     private final PowerLeechService powerLeechService;
+    private final VpLogService vpLogService;
+    private final BuildingService buildingService;
     private final com.gaiaproject.repository.game.GameRepository gameRepository;
+    private final FederationFormService federationFormService;
+    private final GamePlayerFederationTokenRepository federationTokenRepository;
 
     /** 함대 선박 특수 액션 실행 */
     public FleetShipActionResponse executeAction(UUID gameId, FleetShipActionRequest request) {
@@ -71,7 +80,7 @@ public class FleetShipActionService {
             return switch (actionCode) {
                 // === TF_MARS ===
                 case "TF_MARS_VP" -> executeTfMarsVp(gameId, playerId, ps, actionCode);
-                case "TF_MARS_GAIAFORM" -> executeTfMarsGaiaform(gameId, playerId, ps, actionCode, request.hexQ(), request.hexR());
+                case "TF_MARS_GAIAFORM" -> executeTfMarsGaiaform(gameId, playerId, ps, actionCode, request.hexQ(), request.hexR(), request.qicUsed());
                 case "TF_MARS_TERRAFORM" -> executeTfMarsTerraform(gameId, playerId, ps, actionCode);
 
                 // === ECLIPSE ===
@@ -80,15 +89,15 @@ public class FleetShipActionService {
                 case "ECLIPSE_MINE" -> executeEclipseMine(gameId, playerId, ps, actionCode, request.hexQ(), request.hexR());
 
                 // === REBELLION ===
-                case "REBELLION_TECH" -> executeRebellionTech(gameId, playerId, ps, actionCode, request.trackCode(), request.techTrackCode());
+                case "REBELLION_TECH" -> executeRebellionTech(gameId, playerId, ps, actionCode, request.trackCode(), request.techTrackCode(), request.coveredTileCode(), Boolean.TRUE.equals(request.splitAction()));
                 case "REBELLION_UPGRADE" -> executeRebellionUpgrade(gameId, playerId, ps, actionCode, request.hexQ(), request.hexR());
                 case "REBELLION_CONVERT" -> executeRebellionConvert(gameId, playerId, ps, actionCode);
 
                 // === TWILIGHT ===
-                case "TWILIGHT_FED" -> executeTwilightFed(gameId, playerId, ps, actionCode);
-                case "TWILIGHT_UPGRADE" -> executeTwilightUpgrade(gameId, playerId, ps, actionCode, request.hexQ(), request.hexR(), request.trackCode(), request.techTrackCode());
+                case "TWILIGHT_FED" -> executeTwilightFed(gameId, playerId, ps, actionCode, request.federationTileCode(), request.trackCode(), request.techTrackCode(), request.coveredTileCode());
+                case "TWILIGHT_UPGRADE" -> executeTwilightUpgrade(gameId, playerId, ps, actionCode, request.hexQ(), request.hexR(), request.trackCode(), request.techTrackCode(), request.coveredTileCode());
                 case "TWILIGHT_NAV" -> executeTwilightNav(gameId, playerId, ps, actionCode);
-                case "TWILIGHT_ARTIFACT" -> executeTwilightArtifact(gameId, playerId, ps, actionCode, request.trackCode());
+                case "TWILIGHT_ARTIFACT" -> executeTwilightArtifact(gameId, playerId, ps, actionCode, request.trackCode(), request.federationTileCode());
 
                 default -> FleetShipActionResponse.fail(gameId, actionCode, "알 수 없는 함대 액션: " + actionCode);
             };
@@ -107,6 +116,7 @@ public class FleetShipActionService {
         int techTileCount = techTileRepository.findByGameIdAndPlayerId(gameId, playerId).size();
         int vp = techTileCount + 2;
         ps.addVP(vp);
+        vpLogService.logVp(ps.getGameId(), ps.getPlayerId(), VpCategory.FLEET, vp, null, "TF_MARS VP");
         playerStateRepository.save(ps);
         ConfirmActionResponse result = endTurn(gameId, playerId, code);
         log.info("[함대] {}: game={}, player={}, techTiles={}, vp={}", code, gameId, playerId, techTileCount, vp);
@@ -115,7 +125,7 @@ public class FleetShipActionService {
 
     /** TF_MARS_GAIAFORM: 파워 2 → TRANSDIM 행성에 가이아포머 즉시 배치 (토큰 소비 없음, 즉시 GAIA 변환) */
     private FleetShipActionResponse executeTfMarsGaiaform(UUID gameId, UUID playerId, GamePlayerState ps, String code,
-                                                            Integer hexQ, Integer hexR) {
+                                                            Integer hexQ, Integer hexR, Integer qicUsed) {
         if (hexQ == null || hexR == null) return FleetShipActionResponse.fail(gameId, code, "헥스 좌표가 필요합니다");
 
         GameHex hex = hexRepository.findByGameIdAndHexQAndHexR(gameId, hexQ, hexR)
@@ -125,6 +135,13 @@ public class FleetShipActionService {
             return FleetShipActionResponse.fail(gameId, code, "차원변형 행성에만 즉시 가이아포밍이 가능합니다");
         if (buildingRepository.existsByGameIdAndHexQAndHexR(gameId, hexQ, hexR))
             return FleetShipActionResponse.fail(gameId, code, "이미 건물이 있는 위치입니다");
+
+        // QIC 거리 확장 소모
+        int qic = qicUsed != null ? qicUsed : 0;
+        if (qic > 0) {
+            if (ps.getQic() < qic) return FleetShipActionResponse.fail(gameId, code, "QIC가 부족합니다");
+            ps.spendQic(qic);
+        }
 
         // 파워 2 소비 + 가이아포머 재고 소모
         if (ps.getStockGaiaformer() <= 0) {
@@ -151,7 +168,9 @@ public class FleetShipActionService {
     private FleetShipActionResponse executeTfMarsTerraform(UUID gameId, UUID playerId, GamePlayerState ps, String code) {
         ps.spendCredit(3);
         playerStateRepository.save(ps);
-        // 턴 종료 안 함 — FE가 후속 placeMineInPlay(terraformDiscount=1) 호출
+        // 액션 기록 (사용 여부 추적용) — 턴 종료는 안 함
+        actionService.saveActionOnly(gameId, playerId, com.gaiaproject.domain.enumtype.action.ActionType.FLEET_SHIP_ACTION,
+                String.format("{\"actionCode\":\"%s\"}", code));
         log.info("[함대] {}: game={}, player={} (후속 광산 건설 대기)", code, gameId, playerId);
         return FleetShipActionResponse.success(gameId, code, 0, null, false);
     }
@@ -165,12 +184,16 @@ public class FleetShipActionService {
         ps.spendQic(2);
         List<GameBuilding> myBuildings = buildingRepository.findByGameIdAndPlayerId(gameId, playerId);
         Set<PlanetType> colonizedTypes = myBuildings.stream()
+                .filter(b -> b.getBuildingType() != BuildingType.GAIAFORMER
+                        && b.getBuildingType() != BuildingType.SPACE_STATION
+                        && !b.isLantidsMine())
                 .map(b -> hexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR())
                         .map(GameHex::getPlanetType).orElse(null))
-                .filter(pt -> pt != null && pt != PlanetType.EMPTY && pt != PlanetType.TRANSDIM && pt != PlanetType.GAIA)
+                .filter(pt -> pt != null && pt != PlanetType.EMPTY && pt != PlanetType.TRANSDIM)
                 .collect(Collectors.toSet());
         int vp = colonizedTypes.size() + 2;
         ps.addVP(vp);
+        vpLogService.logVp(ps.getGameId(), ps.getPlayerId(), VpCategory.FLEET, vp, null, "ECLIPSE VP");
         playerStateRepository.save(ps);
         ConfirmActionResponse result = endTurn(gameId, playerId, code);
         log.info("[함대] {}: game={}, player={}, planetTypes={}, vp={}", code, gameId, playerId, colonizedTypes.size(), vp);
@@ -181,7 +204,7 @@ public class FleetShipActionService {
     private FleetShipActionResponse executeEclipseTech(UUID gameId, UUID playerId, GamePlayerState ps, String code, String trackCode) {
         if (trackCode == null || trackCode.isBlank())
             return FleetShipActionResponse.fail(gameId, code, "기술 트랙 코드가 필요합니다");
-        ps.spendPower(2);
+        ps.spendPower(3);
         ps.spendKnowledge(2);
         advanceTrack(gameId, ps, trackCode);
         playerStateRepository.save(ps);
@@ -210,9 +233,33 @@ public class FleetShipActionService {
         GameBuilding mine = GameBuilding.place(gameId, playerId, hexQ, hexR, BuildingType.MINE);
         buildingRepository.save(mine);
 
-        ConfirmActionResponse result = endTurn(gameId, playerId, code);
+        var game = gameRepository.findById(gameId).orElseThrow();
+
+        // 라운드 점수: 광산 건설
+        roundScoringService.award(gameId, game.getCurrentRound(), ps, com.gaiaproject.domain.enumtype.rounds.RoundScoringEvent.MINE_PLACED, 1);
+        // 새 섹터 진출 점수
+        if (buildingRepository.findByGameIdAndPlayerId(gameId, playerId).stream()
+                .filter(b -> b.getId() != mine.getId())
+                .noneMatch(b -> {
+                    var h = hexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR()).orElse(null);
+                    return h != null && h.getSectorId() != null && h.getSectorId().equals(hex.getSectorId());
+                })) {
+            roundScoringService.award(gameId, game.getCurrentRound(), ps, com.gaiaproject.domain.enumtype.rounds.RoundScoringEvent.NEW_SECTOR_ENTERED, 1);
+        }
+
+        // 인접 연방 자동 편입
+        federationFormService.autoJoinFederation(gameId, playerId, hexQ, hexR);
+
+        // 액션 저장 (턴 진행은 파워 리치 해소 후)
+        String actionData = String.format("{\"actionCode\":\"%s\",\"hexQ\":%d,\"hexR\":%d}", code, hexQ, hexR);
+        actionService.saveActionOnly(gameId, playerId, com.gaiaproject.domain.enumtype.action.ActionType.FLEET_SHIP_ACTION, actionData);
+
+        // 파워 리치 처리 (인접 건물 파워 충전 알림 + 턴 진행 담당)
+        List<GameBuilding> allBuildings = buildingRepository.findByGameId(gameId);
+        powerLeechService.createBatchAndProcess(game, playerId, hexQ, hexR, BuildingType.MINE, allBuildings, null, null);
+
         log.info("[함대] {}: game={}, player={}, hex=({},{})", code, gameId, playerId, hexQ, hexR);
-        return FleetShipActionResponse.success(gameId, code, 0, result.nextTurnSeatNo(), true);
+        return FleetShipActionResponse.success(gameId, code, 0, null, true);
     }
 
     // ===========================
@@ -220,7 +267,7 @@ public class FleetShipActionService {
     // ===========================
 
     /** REBELLION_TECH: QIC 3 → 기본 기술 타일 1장 획득 + 해당 트랙 1칸 전진 */
-    private FleetShipActionResponse executeRebellionTech(UUID gameId, UUID playerId, GamePlayerState ps, String code, String tileCode, String techTrackCode) {
+    private FleetShipActionResponse executeRebellionTech(UUID gameId, UUID playerId, GamePlayerState ps, String code, String tileCode, String techTrackCode, String coveredTileCode, boolean splitAction) {
         if (tileCode == null || tileCode.isBlank())
             return FleetShipActionResponse.fail(gameId, code, "기술 타일 코드가 필요합니다");
 
@@ -232,9 +279,17 @@ public class FleetShipActionService {
         try {
             var game = gameRepository.findById(gameId)
                     .orElseThrow(() -> new IllegalStateException("게임을 찾을 수 없습니다"));
-            techTileService.acquireTileForBuilding(gameId, playerId, tileCode, techTrackCode, game.getEconomyTrackOption());
+            techTileService.acquireTileForBuilding(gameId, playerId, tileCode, techTrackCode, game.getEconomyTrackOption(), coveredTileCode);
         } catch (IllegalStateException e) {
             return FleetShipActionResponse.fail(gameId, code, e.getMessage());
+        }
+
+        // splitAction=true: 후속 광산 건설이 이어지므로 턴을 넘기지 않음
+        if (splitAction) {
+            String actionData = String.format("{\"actionCode\":\"%s\"}", code);
+            actionService.saveActionOnly(gameId, playerId, ActionType.FLEET_SHIP_ACTION, actionData);
+            log.info("[함대] {}: game={}, player={}, tile={}, track={} (split, 후속 광산 대기)", code, gameId, playerId, tileCode, techTrackCode);
+            return FleetShipActionResponse.success(gameId, code, 0, null, false);
         }
 
         ConfirmActionResponse result = endTurn(gameId, playerId, code);
@@ -253,27 +308,18 @@ public class FleetShipActionService {
         if (building.getBuildingType() != BuildingType.MINE) return FleetShipActionResponse.fail(gameId, code, "광산만 업그레이드 가능합니다");
         if (ps.getStockTradingStation() <= 0) return FleetShipActionResponse.fail(gameId, code, "교역소 재고가 없습니다");
 
+        // 비용 지불
         ps.spendPower(3);
         ps.spendOre(1);
-        ps.decreaseStockTradingStation();
-        ps.addMineToStock();
         playerStateRepository.save(ps);
 
-        building.upgrade(BuildingType.TRADING_STATION);
-        buildingRepository.save(building);
-
-        // 라운드 점수: 교역소 건설
+        // 공용 코어: 재고/건물/라운드점수/리치 처리
         var game = gameRepository.findById(gameId).orElseThrow();
-        if (game.getCurrentRound() != null) {
-            roundScoringService.award(gameId, game.getCurrentRound(), ps,
-                    com.gaiaproject.domain.enumtype.rounds.RoundScoringEvent.TRADING_STATION_BUILT, 1);
-        }
-
-        // 액션 저장 + 파워 리치 처리
-        actionService.saveActionOnly(gameId, playerId, com.gaiaproject.domain.enumtype.action.ActionType.FLEET_SHIP_ACTION,
-                String.format("{\"actionCode\":\"%s\",\"hexQ\":%d,\"hexR\":%d}", code, hexQ, hexR));
-        List<GameBuilding> allBuildings = buildingRepository.findByGameId(gameId);
-        powerLeechService.createBatchAndProcess(game, playerId, hexQ, hexR, BuildingType.TRADING_STATION, allBuildings, null, null);
+        String actionData = String.format("{\"actionCode\":\"%s\",\"hexQ\":%d,\"hexR\":%d}", code, hexQ, hexR);
+        String error = buildingService.upgradeCore(game, playerId, building, BuildingType.TRADING_STATION,
+                null, null, null, null,
+                ActionType.FLEET_SHIP_ACTION, actionData, true);
+        if (error != null) return FleetShipActionResponse.fail(gameId, code, error);
 
         log.info("[함대] {}: game={}, player={}, hex=({},{})", code, gameId, playerId, hexQ, hexR);
         return FleetShipActionResponse.success(gameId, code, 0, null, true);
@@ -294,22 +340,67 @@ public class FleetShipActionService {
     // TWILIGHT
     // ===========================
 
-    /** TWILIGHT_FED: QIC 3 → 연방 수입 (1 QIC + 1 광석 + 2 VP, simplified) */
-    private FleetShipActionResponse executeTwilightFed(UUID gameId, UUID playerId, GamePlayerState ps, String code) {
+    /** TWILIGHT_FED: QIC 3 → 선택한 연방 토큰 보상 재사용 */
+    private FleetShipActionResponse executeTwilightFed(UUID gameId, UUID playerId, GamePlayerState ps, String code,
+                                                        String federationTileCode, String trackCode, String techTrackCode, String coveredTileCode) {
+        if (federationTileCode == null || federationTileCode.isEmpty()) {
+            return FleetShipActionResponse.fail(gameId, code, "연방 토큰을 선택해야 합니다");
+        }
+        FederationTileType tileType;
+        try { tileType = FederationTileType.valueOf(federationTileCode); }
+        catch (Exception e) { return FleetShipActionResponse.fail(gameId, code, "알 수 없는 연방 토큰: " + federationTileCode); }
+
+        if (!federationTokenRepository.existsByGameIdAndPlayerIdAndFederationTileType(gameId, playerId, tileType)) {
+            return FleetShipActionResponse.fail(gameId, code, "해당 연방 토큰을 보유하고 있지 않습니다: " + federationTileCode);
+        }
+
         ps.spendQic(3);
-        ps.addQic(1);
-        ps.addOre(1);
-        ps.addVP(2);
+        var reward = tileType.getImmediateReward();
+        ps.applyIncome(reward);
+        if (reward.vp() > 0) {
+            vpLogService.logVp(gameId, playerId, VpCategory.FLEET, reward.vp(), null, "TWILIGHT_FED VP (" + federationTileCode + ")");
+        }
         playerStateRepository.save(ps);
+
+        var specialAction = tileType.getSpecialAction();
+
+        // 기술 타일 획득 (FED_EXP_TILE_1)
+        if (specialAction == FederationActionType.GAIN_BASIC_TECH_TILE) {
+            if (trackCode != null && !trackCode.isEmpty()) {
+                var game = gameRepository.findById(gameId).orElseThrow();
+                techTileService.acquireTileForBuilding(gameId, playerId, trackCode, techTrackCode, game.getEconomyTrackOption(), coveredTileCode);
+            }
+            ConfirmActionResponse result = endTurn(gameId, playerId, code);
+            log.info("[함대] {}: game={}, player={}, tile={}", code, gameId, playerId, federationTileCode);
+            return FleetShipActionResponse.success(gameId, code, 0, result.nextTurnSeatNo(), true);
+        }
+
+        // 3삽 광산 배치 (FED_EXP_TILE_5) — 후속 placeMine 호출 대기
+        if (specialAction == FederationActionType.TERRAFORM_3_PLACE_MINE) {
+            String actionData = String.format("{\"actionCode\":\"%s\",\"federationTileCode\":\"%s\"}", code, federationTileCode);
+            actionService.saveActionOnly(gameId, playerId, ActionType.FLEET_SHIP_ACTION, actionData);
+            log.info("[함대] {}: game={}, player={}, tile={} (3삽 광산 대기)", code, gameId, playerId, federationTileCode);
+            return FleetShipActionResponse.success(gameId, code, 0, null, false);
+        }
+
+        // 무한거리 광산 배치 (FED_EXP_TILE_7) — 후속 placeMine 호출 대기
+        if (specialAction == FederationActionType.PLACE_MINE_NO_RANGE_LIMIT) {
+            String actionData = String.format("{\"actionCode\":\"%s\",\"federationTileCode\":\"%s\"}", code, federationTileCode);
+            actionService.saveActionOnly(gameId, playerId, ActionType.FLEET_SHIP_ACTION, actionData);
+            log.info("[함대] {}: game={}, player={}, tile={} (무한거리 광산 대기)", code, gameId, playerId, federationTileCode);
+            return FleetShipActionResponse.success(gameId, code, 0, null, false);
+        }
+
+        // 일반 토큰: 즉시 턴 종료
         ConfirmActionResponse result = endTurn(gameId, playerId, code);
-        log.info("[함대] {}: game={}, player={}", code, gameId, playerId);
-        return FleetShipActionResponse.success(gameId, code, 2, result.nextTurnSeatNo(), true);
+        log.info("[함대] {}: game={}, player={}, tile={}", code, gameId, playerId, federationTileCode);
+        return FleetShipActionResponse.success(gameId, code, reward.vp(), result.nextTurnSeatNo(), true);
     }
 
     /** TWILIGHT_UPGRADE: 파워 3 + 광석 2 → 자신의 교역소를 연구소로 업그레이드 + 기술 타일 획득 */
     private FleetShipActionResponse executeTwilightUpgrade(UUID gameId, UUID playerId, GamePlayerState ps, String code,
                                                              Integer hexQ, Integer hexR,
-                                                             String tileCode, String techTrackCode) {
+                                                             String tileCode, String techTrackCode, String coveredTileCode) {
         if (hexQ == null || hexR == null) return FleetShipActionResponse.fail(gameId, code, "헥스 좌표가 필요합니다");
 
         GameBuilding building = buildingRepository.findFirstByGameIdAndHexQAndHexRAndIsLantidsMine(gameId, hexQ, hexR, false).orElse(null);
@@ -319,36 +410,22 @@ public class FleetShipActionService {
             return FleetShipActionResponse.fail(gameId, code, "교역소만 업그레이드 가능합니다");
         if (ps.getStockResearchLab() <= 0) return FleetShipActionResponse.fail(gameId, code, "연구소 재고가 없습니다");
 
+        // 비용 지불
         ps.spendPower(3);
         ps.spendOre(2);
-        ps.decreaseStockResearchLab();
-        ps.addTradingStationToStock();
         playerStateRepository.save(ps);
 
-        building.upgrade(BuildingType.RESEARCH_LAB);
-        buildingRepository.save(building);
-
+        // 공용 코어: 재고/건물/기술타일/리치 처리 (연구소 건설은 별도 RoundScoringEvent 없음)
         var game = gameRepository.findById(gameId).orElseThrow();
-
-        // 기술 타일 획득 (연구소 업그레이드이므로)
-        if (tileCode != null && !tileCode.isBlank()) {
-            try {
-                techTileService.acquireTileForBuilding(gameId, playerId, tileCode, techTrackCode, game.getEconomyTrackOption());
-            } catch (IllegalStateException e) {
-                return FleetShipActionResponse.fail(gameId, code, "기술 타일 획득 실패: " + e.getMessage());
-            }
+        String actionData = String.format("{\"actionCode\":\"%s\",\"hexQ\":%d,\"hexR\":%d}", code, hexQ, hexR);
+        try {
+            String error = buildingService.upgradeCore(game, playerId, building, BuildingType.RESEARCH_LAB,
+                    null, tileCode, techTrackCode, coveredTileCode,
+                    ActionType.FLEET_SHIP_ACTION, actionData, false);
+            if (error != null) return FleetShipActionResponse.fail(gameId, code, error);
+        } catch (IllegalStateException e) {
+            return FleetShipActionResponse.fail(gameId, code, e.getMessage());
         }
-
-        // 라운드 점수: 연구소 건설
-        if (game.getCurrentRound() != null) {
-            // 연구소 건설이지만 별도 RoundScoringEvent 없으므로 생략 가능
-        }
-
-        // 액션 저장 + 파워 리치 처리 (턴 진행은 리치 해소 후)
-        actionService.saveActionOnly(gameId, playerId, com.gaiaproject.domain.enumtype.action.ActionType.FLEET_SHIP_ACTION,
-                String.format("{\"actionCode\":\"%s\",\"hexQ\":%d,\"hexR\":%d}", code, hexQ, hexR));
-        List<GameBuilding> allBuildings = buildingRepository.findByGameId(gameId);
-        powerLeechService.createBatchAndProcess(game, playerId, hexQ, hexR, BuildingType.RESEARCH_LAB, allBuildings, null, null);
 
         log.info("[함대] {}: game={}, player={}, hex=({},{})", code, gameId, playerId, hexQ, hexR);
         return FleetShipActionResponse.success(gameId, code, 0, null, true);
@@ -358,19 +435,41 @@ public class FleetShipActionService {
     private FleetShipActionResponse executeTwilightNav(UUID gameId, UUID playerId, GamePlayerState ps, String code) {
         ps.spendKnowledge(1);
         playerStateRepository.save(ps);
-        // 턴 종료 안 함 — FE가 후속 placeMineInPlay 호출
+        // 액션 기록 (사용 여부 추적용) — 턴 종료는 안 함
+        actionService.saveActionOnly(gameId, playerId, com.gaiaproject.domain.enumtype.action.ActionType.FLEET_SHIP_ACTION,
+                String.format("{\"actionCode\":\"%s\"}", code));
         log.info("[함대] {}: game={}, player={} (후속 광산 건설 대기)", code, gameId, playerId);
         return FleetShipActionResponse.success(gameId, code, 0, null, false);
     }
 
     /** TWILIGHT_ARTIFACT: 파워 6 소각 → 인공물 선택 획득 */
-    private FleetShipActionResponse executeTwilightArtifact(UUID gameId, UUID playerId, GamePlayerState ps, String code, String artifactCode) {
+    private FleetShipActionResponse executeTwilightArtifact(UUID gameId, UUID playerId, GamePlayerState ps, String code, String artifactCode, String federationTileCode) {
         if (artifactCode == null || artifactCode.isBlank()) {
             return FleetShipActionResponse.fail(gameId, code, "인공물 코드가 필요합니다");
         }
+
+        // ARTIFACT_13: 연방 토큰 보상 1회 받기
+        if ("ARTIFACT_13".equals(artifactCode) && federationTileCode != null && !federationTileCode.isBlank()) {
+            // 파워 6 소각
+            artifactService.acquireArtifact(gameId, playerId, artifactCode);
+            // 연방 토큰 보상 적용
+            FederationTileType tileType;
+            try { tileType = FederationTileType.valueOf(federationTileCode); }
+            catch (Exception e) { return FleetShipActionResponse.fail(gameId, code, "알 수 없는 연방 토큰: " + federationTileCode); }
+            ResourcesVo reward = tileType.getImmediateReward();
+            ps = playerStateRepository.findByGameIdAndPlayerId(gameId, playerId).orElse(ps);
+            ps.applyIncome(reward);
+            if (reward.vp() > 0) vpLogService.logVp(gameId, playerId, VpCategory.ARTIFACT, reward.vp(), null, "ARTIFACT_13 연방토큰 보상: " + federationTileCode);
+            playerStateRepository.save(ps);
+            String actionData = String.format("{\"actionCode\":\"%s\",\"artifactCode\":\"%s\"}", code, artifactCode);
+            ConfirmActionResponse result = actionService.saveActionAndNextTurn(gameId, playerId, ActionType.FLEET_SHIP_ACTION, actionData);
+            log.info("[함대] {}: game={}, player={}, artifact={}, fedToken={}", code, gameId, playerId, artifactCode, federationTileCode);
+            return FleetShipActionResponse.success(gameId, code, reward.vp(), result.nextTurnSeatNo(), true);
+        }
+
         artifactService.acquireArtifact(gameId, playerId, artifactCode);
-        // acquireArtifact에서 파워 소각 + 즉시 효과 + DB 기록 모두 처리
-        ConfirmActionResponse result = endTurn(gameId, playerId, code);
+        String actionData = String.format("{\"actionCode\":\"%s\",\"artifactCode\":\"%s\"}", code, artifactCode);
+        ConfirmActionResponse result = actionService.saveActionAndNextTurn(gameId, playerId, ActionType.FLEET_SHIP_ACTION, actionData);
         log.info("[함대] {}: game={}, player={}, artifact={}", code, gameId, playerId, artifactCode);
         return FleetShipActionResponse.success(gameId, code, 0, result.nextTurnSeatNo(), true);
     }

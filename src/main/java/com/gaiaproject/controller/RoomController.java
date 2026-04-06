@@ -48,6 +48,12 @@ public class RoomController {
         return ResponseEntity.ok(response);
     }
 
+    /** [임시 디버그] 닉네임으로 rejoinToken 조회 */
+    @GetMapping("/api/rooms/{roomId}/participants/debug")
+    public ResponseEntity<?> debugParticipant(@PathVariable UUID roomId, @RequestParam String nickname) {
+        return ResponseEntity.ok(gameService.debugGetToken(roomId, nickname));
+    }
+
     @Operation(summary = "참가자 검증 (재입장 시)")
     @GetMapping("/api/rooms/{roomId}/participants/{playerId}/verify")
     public ResponseEntity<VerifyParticipantResponse> verifyParticipant(
@@ -83,6 +89,17 @@ public class RoomController {
     ) {
         EnterGameResponse response = gameService.enterRoom(roomId, request);
         return ResponseEntity.ok(response);
+    }
+
+    @Operation(summary = "비딩 수동 시작 (맵 회전 완료 후)")
+    @PostMapping("/api/rooms/{roomId}/start-bidding")
+    public ResponseEntity<?> startBidding(@PathVariable UUID roomId) {
+        try {
+            gameService.startBidding(roomId);
+            return ResponseEntity.ok(java.util.Map.of("success", true));
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("success", false, "message", e.getMessage()));
+        }
     }
 
     @Operation(summary = "좌석 선택(턴 선택)")

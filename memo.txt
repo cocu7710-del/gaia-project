@@ -1,0 +1,26 @@
+  # BE 터널
+  C:\Users\DM\cloudflared.exe tunnel --url http://localhost:9000
+
+  # FE 터널
+  C:\Users\DM\cloudflared.exe tunnel --url http://localhost:5173
+
+  1. BE 로컬 실행 (gradlew bootRun)
+  2. BE 터널 실행 → URL 복사
+  3. .env.local + .env.tunnel에 BE 터널 URL 붙여넣기
+  4. FE 로컬 실행 (npm run dev)
+  5. FE 터널 실행 → 이 URL이 외부 접속 주소
+
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), 'tester01');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), 'tester02');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), 'tester03');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), 'tester04');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '90/루다');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '93/재원');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '93/남현');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '93/흥석');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '94/동민');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '95/도희');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '95/지영');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '97/준혁');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '98/성태');
+

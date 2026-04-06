@@ -40,8 +40,10 @@ public record TechTrackResponse(
             String description,     // 능력 설명
             boolean isTaken,        // 플레이어가 가져갔는지 (고급 타일용)
             String takenByPlayerId, // 고급 타일: 가져간 플레이어 UUID
-            boolean isActionUsed,   // 이번 라운드 ACTION 사용 여부
-            List<String> ownerPlayerIds // 기본 타일: 보유 플레이어 UUID 목록
+            boolean isActionUsed,   // 이번 라운드 ACTION 사용 여부 (하위 호환)
+            List<String> ownerPlayerIds, // 기본 타일: 보유 플레이어 UUID 목록
+            List<String> actionUsedByPlayerIds, // 이번 라운드 ACTION 사용한 플레이어 UUID 목록
+            java.util.Map<String, String> coveredByMap // playerId → 덮은 고급 타일 코드 (null이면 미덮임)
     ) {}
 
     /**
@@ -55,6 +57,7 @@ public record TechTrackResponse(
             String description,     // 능력 설명
             boolean isTaken,        // 플레이어가 가져갔는지
             String takenByPlayerId, // 가져간 플레이어 UUID (null이면 미획득)
-            boolean isActionUsed    // 이번 라운드 ACTION 사용 여부
+            boolean isActionUsed,   // 이번 라운드 ACTION 사용 여부 (하위 호환)
+            List<String> actionUsedByPlayerIds // 이번 라운드 ACTION 사용한 플레이어 UUID 목록
     ) {}
 }

@@ -7,8 +7,12 @@ import com.gaiaproject.domain.entity.player.GamePlayerState;
 import com.gaiaproject.domain.entity.tech.GameAdvTechOffer;
 import com.gaiaproject.domain.entity.tech.GameTechOffer;
 import com.gaiaproject.domain.enumtype.action.ActionType;
+import com.gaiaproject.domain.enumtype.building.BuildingType;
+import com.gaiaproject.domain.enumtype.player.FactionType;
+import com.gaiaproject.domain.enumtype.action.VpCategory;
 import com.gaiaproject.domain.enumtype.rounds.RoundScoringEvent;
 import com.gaiaproject.domain.enumtype.tech.AdvancedTechTileCode;
+import com.gaiaproject.domain.enumtype.tech.CommonAdvTileConditionType;
 import com.gaiaproject.domain.enumtype.tech.EconomyTrackOption;
 import com.gaiaproject.domain.enumtype.tech.TechAbilityType;
 import com.gaiaproject.domain.enumtype.tech.TechCategoryType;
@@ -40,7 +44,7 @@ import java.util.UUID;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-@Transactional
+@Transactional(noRollbackFor = IllegalStateException.class)
 public class TechTileService {
 
     private final GameTechOfferRepository gameTechOfferRepository;
@@ -55,7 +59,9 @@ public class TechTileService {
     private final com.gaiaproject.repository.federation.GameFederationGroupRepository federationGroupRepository;
     private final com.gaiaproject.repository.player.GamePlayerFederationTokenRepository playerFederationTokenRepository;
     private final com.gaiaproject.repository.federation.GameFederationOfferRepository federationOfferRepository;
+    private final com.gaiaproject.repository.player.GamePlayerFleetProbeRepository fleetProbeRepository;
     private final GameWebSocketService webSocketService;
+    private final VpLogService vpLogService;
 
     /** 지식 트랙 전진 (지식 4 소모, PLAYING 페이즈) */
     public AdvanceTechResponse advanceTechTrack(UUID gameId, AdvanceTechRequest request) {
@@ -68,6 +74,27 @@ public class TechTileService {
 
         GamePlayerState playerState = gamePlayerStateRepository.findByGameIdAndPlayerId(gameId, request.playerId())
                 .orElseThrow(() -> new IllegalStateException("플레이어 상태를 찾을 수 없습니다"));
+
+        // 발타크: PI 건설 전 NAVIGATION 트랙 전진 불가
+        if ("NAVIGATION".equals(request.trackCode())
+                && playerState.getFactionType() == FactionType.BAL_TAKS
+                && playerState.getStockPlanetaryInstitute() > 0) {
+            return AdvanceTechResponse.fail(gameId, "발타크는 행성 의회 건설 후 거리 트랙을 올릴 수 있습니다.");
+        }
+
+        // 5단계 1명 제한: 현재 4단계에서 5단계 진입 시도할 때만 체크
+        int currentLevel = switch (request.trackCode()) {
+            case "TERRA_FORMING" -> playerState.getTechTerraforming();
+            case "NAVIGATION"    -> playerState.getTechNavigation();
+            case "AI"            -> playerState.getTechAi();
+            case "GAIA_FORMING"  -> playerState.getTechGaia();
+            case "ECONOMY"       -> playerState.getTechEconomy();
+            case "SCIENCE"       -> playerState.getTechScience();
+            default -> 0;
+        };
+        if (currentLevel == 4 && isTrackLevel5Occupied(gameId, request.playerId(), request.trackCode())) {
+            return AdvanceTechResponse.fail(gameId, "이미 다른 플레이어가 해당 트랙 5단계에 있습니다.");
+        }
 
         try {
             playerState.advanceTechTrack(request.trackCode());
@@ -104,20 +131,44 @@ public class TechTileService {
 
     /**
      * 교역소/아카데미 건설 시 기술 타일 획득 (지식 소모 없음, 트랙 1칸 전진)
-     * - 트랙 고유 타일: 해당 트랙 자동 전진
+     * - 기본 타일: 그대로 획득 + 트랙 전진
+     * - 고급 타일(ADV_): 연방 토큰 플립 + 기본타일 커버 + 트랙 전진
      * - COMMON/EXPANSION 타일: techTrackCode로 플레이어가 선택한 트랙 전진
      *
      * @param gameId 게임 ID
      * @param playerId 플레이어 ID
-     * @param tileCode 획득할 기술 타일 코드 (TechTileCode 문자열)
+     * @param tileCode 획득할 기술 타일 코드
      * @param techTrackCode COMMON 타일일 때 플레이어가 선택한 트랙 코드 (nullable)
      * @param economyOption 경제 트랙 옵션 (즉발 보상 계산용)
+     * @param coveredTileCode 고급 타일 획득 시 덮을 기본 타일 코드 (nullable, 고급 타일일 때 필수)
      * @throws IllegalStateException 유효하지 않은 타일 또는 중복 소유 시
      */
     public void acquireTileForBuilding(UUID gameId, UUID playerId, String tileCode,
+                                       String techTrackCode, EconomyTrackOption economyOption,
+                                       String coveredTileCode) {
+        log.info("[acquireTileForBuilding] 진입: game={}, player={}, tile={}, track={}, cover={}",
+                gameId, playerId, tileCode, techTrackCode, coveredTileCode);
+
+        boolean isAdvanced = tileCode.startsWith("ADV_");
+
+        if (isAdvanced) {
+            acquireAdvancedTile(gameId, playerId, tileCode, techTrackCode, economyOption, coveredTileCode);
+        } else {
+            acquireBasicTile(gameId, playerId, tileCode, techTrackCode, economyOption);
+        }
+    }
+
+    /** 하위 호환: coveredTileCode 없이 호출 (기본 타일 전용) */
+    public void acquireTileForBuilding(UUID gameId, UUID playerId, String tileCode,
                                        String techTrackCode, EconomyTrackOption economyOption) {
-        log.info("[acquireTileForBuilding] 진입: game={}, player={}, tile={}, track={}", gameId, playerId, tileCode, techTrackCode);
-        // 1. 타일 코드 파싱
+        acquireTileForBuilding(gameId, playerId, tileCode, techTrackCode, economyOption, null);
+    }
+
+    /**
+     * 기본 기술 타일 획득
+     */
+    private void acquireBasicTile(UUID gameId, UUID playerId, String tileCode,
+                                  String techTrackCode, EconomyTrackOption economyOption) {
         TechTileCode techTileCode;
         try {
             techTileCode = TechTileCode.valueOf(tileCode);
@@ -125,37 +176,18 @@ public class TechTileService {
             throw new IllegalStateException("알 수 없는 기술 타일 코드: " + tileCode);
         }
 
-        // 2. 보드에 있는 타일 조회
         GameTechOffer offer = gameTechOfferRepository.findByGameIdAndTechTileCode(gameId, techTileCode)
                 .orElseThrow(() -> new IllegalStateException("해당 기술 타일이 없습니다: " + tileCode));
-
-        // 고급 기술 타일은 1명만 가져갈 수 있음, 기본 타일은 중복 가능 (본인 제외)
-        boolean isAdvanced = tileCode.startsWith("ADV_");
-        if (isAdvanced && offer.getTakenByPlayerId() != null)
-            throw new IllegalStateException("이미 가져간 고급 기술 타일입니다: " + tileCode);
-
-        // 고급 기술 타일: 사용 가능한 연방 토큰 1개 뒤집기 필요
-        if (isAdvanced) {
-            if (!flipUsableFederationToken(gameId, playerId)) {
-                throw new IllegalStateException("고급 기술 타일 획득에는 사용 가능한 연방 토큰이 필요합니다");
-            }
-        }
 
         // 본인 중복 소유 불가
         if (playerTechTileRepository.existsByGameIdAndPlayerIdAndTechTileCode(gameId, playerId, tileCode))
             throw new IllegalStateException("이미 보유 중인 기술 타일입니다: " + tileCode);
 
-        // 4. 타일 점유 처리 (고급 타일만 — 기본 타일은 여러 명이 가질 수 있음)
-        if (isAdvanced) {
-            offer.take(playerId);
-            gameTechOfferRepository.save(offer);
-        }
-
-        // 5. 플레이어 타일 기록
+        // 플레이어 타일 기록
         playerTechTileRepository.save(GamePlayerTechTile.builder()
                 .gameId(gameId).playerId(playerId).techTileCode(tileCode).build());
 
-        // 6. 타일 트랙 결정 (COMMON/EXPANSION은 플레이어 선택 트랙 사용)
+        // 트랙 결정 (COMMON/EXPANSION은 플레이어 선택 트랙 사용)
         String tileTrack = offer.getTechTrack();
         String advanceTrack;
         if ("COMMON".equals(tileTrack) || "EXPANSION".equals(tileTrack)) {
@@ -163,18 +195,239 @@ public class TechTileService {
                 throw new IllegalStateException("공용/확장 타일은 트랙 코드가 필요합니다");
             advanceTrack = techTrackCode;
         } else {
-            // 트랙 고유 타일: 타일의 트랙 코드 사용
             advanceTrack = tileTrack;
         }
 
-        // 7. 해당 트랙 전진 (지식 소모 없음) + 즉발 보상
+        // 트랙 전진 + 보상
         GamePlayerState ps = gamePlayerStateRepository.findByGameIdAndPlayerId(gameId, playerId)
                 .orElseThrow(() -> new IllegalStateException("플레이어 상태를 찾을 수 없습니다"));
 
-        String fieldName = trackCodeToFieldName(advanceTrack);
-        ps.advanceTechTrackNoKnowledge(fieldName);
+        // 발타크: PI 건설 전 NAVIGATION 트랙 전진 스킵 (타일만 획득)
+        boolean skipTrackAdvance = "NAVIGATION".equals(advanceTrack)
+                && ps.getFactionType() == FactionType.BAL_TAKS
+                && ps.getStockPlanetaryInstitute() > 0;
 
-        int newLevel = switch (advanceTrack) {
+        int newLevel = getTrackLevel(ps, advanceTrack);
+        // 5단계 점유 시 4→5 진입 불가 → 타일만 획득, 트랙 전진 스킵
+        boolean skipLevel5Block = (newLevel == 4 && isTrackLevel5Occupied(gameId, playerId, advanceTrack));
+        if (!skipTrackAdvance && !skipLevel5Block) {
+            String fieldName = trackCodeToFieldName(advanceTrack);
+            ps.advanceTechTrackNoKnowledge(fieldName);
+
+            newLevel = getTrackLevel(ps, advanceTrack);
+            applyTechTrackReward(ps, advanceTrack, newLevel, economyOption);
+
+            // 라운드 점수 타일
+            Game tileGame = gameRepository.findById(gameId).orElse(null);
+            if (tileGame != null && "PLAYING".equals(tileGame.getGamePhase()) && tileGame.getCurrentRound() != null) {
+                roundScoringService.award(gameId, tileGame.getCurrentRound(), ps, RoundScoringEvent.RESEARCH_ADVANCED, 1);
+            }
+        }
+
+        // 즉발(IMMEDIATE) 효과 적용
+        TechAbility ability = techTileCode.getAbility();
+        if (ability.getType() == TechAbilityType.IMMEDIATE) {
+            applyImmediateTileEffect(gameId, playerId, ps, techTileCode, ability);
+        }
+
+        gamePlayerStateRepository.save(ps);
+        log.info("[기본 타일 획득] game={}, player={}, tile={}, track={}, newLevel={}",
+                gameId, playerId, tileCode, advanceTrack, newLevel);
+    }
+
+    /**
+     * 고급 기술 타일 획득 (ADV_TILE_*)
+     * - 연방 토큰 플립 필수
+     * - 기본 타일 커버 필수 (플레이어 선택)
+     * - COMMON 고급 타일: 게임 조건(VP_25/FLEET_3) 충족 필수
+     * - 일반 고급 타일: 해당 트랙 레벨 4 이상 필수
+     */
+    private void acquireAdvancedTile(UUID gameId, UUID playerId, String tileCode,
+                                     String techTrackCode, EconomyTrackOption economyOption,
+                                     String coveredTileCode) {
+        // 1. 고급 타일 코드 파싱
+        AdvancedTechTileCode advTileCode;
+        try {
+            advTileCode = AdvancedTechTileCode.valueOf(tileCode);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalStateException("알 수 없는 고급 기술 타일 코드: " + tileCode);
+        }
+
+        // 2. 보드에서 고급 타일 조회
+        GameAdvTechOffer advOffer = gameAdvTechOfferRepository.findByGameIdAndAdvTechTileCode(gameId, advTileCode)
+                .orElseThrow(() -> new IllegalStateException("해당 고급 기술 타일이 보드에 없습니다: " + tileCode));
+
+        if (advOffer.getTakenByPlayerId() != null)
+            throw new IllegalStateException("이미 가져간 고급 기술 타일입니다: " + tileCode);
+
+        // 3. 본인 중복 소유 불가
+        if (playerTechTileRepository.existsByGameIdAndPlayerIdAndTechTileCode(gameId, playerId, tileCode))
+            throw new IllegalStateException("이미 보유 중인 기술 타일입니다: " + tileCode);
+
+        // 4. 조건 검증
+        Game game = gameRepository.findById(gameId)
+                .orElseThrow(() -> new IllegalStateException("게임을 찾을 수 없습니다"));
+        GamePlayerState ps = gamePlayerStateRepository.findByGameIdAndPlayerId(gameId, playerId)
+                .orElseThrow(() -> new IllegalStateException("플레이어 상태를 찾을 수 없습니다"));
+
+        String offerTrack = advOffer.getTechTrack();
+        if ("COMMON".equals(offerTrack)) {
+            // COMMON 고급 타일: 게임 조건 체크
+            validateCommonAdvTileCondition(game, ps, gameId, playerId);
+        } else {
+            // 일반 고급 타일: 해당 트랙 레벨 4 이상
+            int trackLevel = getTrackLevel(ps, offerTrack);
+            if (trackLevel < 4) {
+                throw new IllegalStateException("고급 기술 타일 획득에는 해당 트랙 레벨 4 이상이 필요합니다 (현재: " + trackLevel + ")");
+            }
+        }
+
+        // 5. 연방 토큰 플립
+        if (!flipUsableFederationToken(gameId, playerId)) {
+            throw new IllegalStateException("고급 기술 타일 획득에는 사용 가능한 연방 토큰이 필요합니다");
+        }
+
+        // 6. 기본 타일 커버 (필수)
+        if (coveredTileCode == null || coveredTileCode.isBlank()) {
+            throw new IllegalStateException("고급 기술 타일 획득 시 덮을 기본 타일을 선택해야 합니다");
+        }
+        GamePlayerTechTile coverTarget = playerTechTileRepository
+                .findByGameIdAndPlayerIdAndTechTileCode(gameId, playerId, coveredTileCode)
+                .orElseThrow(() -> new IllegalStateException("덮을 기본 타일을 보유하고 있지 않습니다: " + coveredTileCode));
+        if (Boolean.TRUE.equals(coverTarget.getIsCovered())) {
+            throw new IllegalStateException("이미 덮인 기본 타일입니다: " + coveredTileCode);
+        }
+        coverTarget.cover(tileCode);
+        playerTechTileRepository.save(coverTarget);
+        log.info("[타일 커버] player={}, covered={}, by={}", playerId, coveredTileCode, tileCode);
+
+        // 7. 고급 타일 점유 처리
+        advOffer.take(playerId);
+        gameAdvTechOfferRepository.save(advOffer);
+
+        // 8. 플레이어 타일 기록
+        playerTechTileRepository.save(GamePlayerTechTile.builder()
+                .gameId(gameId).playerId(playerId).techTileCode(tileCode).build());
+
+        // 9. 트랙 결정 (모든 고급 타일은 플레이어가 원하는 트랙으로 전진)
+        if (techTrackCode == null || techTrackCode.isBlank())
+            throw new IllegalStateException("고급 타일 획득 시 전진할 트랙 코드가 필요합니다");
+        String advanceTrack = techTrackCode;
+
+        // 10. 트랙 전진 + 보상 (발타크: PI 건설 전 NAVIGATION 스킵)
+        boolean skipAdvTrack = "NAVIGATION".equals(advanceTrack)
+                && ps.getFactionType() == FactionType.BAL_TAKS
+                && ps.getStockPlanetaryInstitute() > 0;
+
+        int newLevel = getTrackLevel(ps, advanceTrack);
+        boolean skipAdvLevel5Block = (newLevel == 4 && isTrackLevel5Occupied(gameId, playerId, advanceTrack));
+        if (!skipAdvTrack && !skipAdvLevel5Block) {
+            String fieldName = trackCodeToFieldName(advanceTrack);
+            ps.advanceTechTrackNoKnowledge(fieldName);
+
+            newLevel = getTrackLevel(ps, advanceTrack);
+            applyTechTrackReward(ps, advanceTrack, newLevel, economyOption);
+
+            // 12. 라운드 점수 타일
+            if ("PLAYING".equals(game.getGamePhase()) && game.getCurrentRound() != null) {
+                roundScoringService.award(gameId, game.getCurrentRound(), ps, RoundScoringEvent.RESEARCH_ADVANCED, 1);
+            }
+        }
+
+        // 11. 고급 타일 즉발(IMMEDIATE) 효과 적용
+        TechAbility ability = advTileCode.getAbility();
+        if (ability.getType() == TechAbilityType.IMMEDIATE) {
+            applyImmediateAdvTileEffect(gameId, playerId, ps, advTileCode, ability);
+        }
+
+        gamePlayerStateRepository.save(ps);
+        log.info("[고급 타일 획득] game={}, player={}, tile={}, track={}, newLevel={}, covered={}",
+                gameId, playerId, tileCode, advanceTrack, newLevel, coveredTileCode);
+    }
+
+    /** COMMON 고급 타일 조건 검증 (VP_25 또는 FLEET_3) */
+    private void validateCommonAdvTileCondition(Game game, GamePlayerState ps, UUID gameId, UUID playerId) {
+        CommonAdvTileConditionType condition = game.getCommonAdvTileCondition();
+        if (condition == null) {
+            throw new IllegalStateException("COMMON 고급 타일 조건이 설정되지 않았습니다");
+        }
+        switch (condition) {
+            case VP_25 -> {
+                if (ps.getVictoryPoints() < 25) {
+                    throw new IllegalStateException("COMMON 고급 타일 획득 조건 미충족: 현재 VP " + ps.getVictoryPoints() + " (25점 이상 필요)");
+                }
+            }
+            case FLEET_3 -> {
+                long fleetCount = fleetProbeRepository.countByGameIdAndPlayerId(gameId, playerId);
+                if (fleetCount < 3) {
+                    throw new IllegalStateException("COMMON 고급 타일 획득 조건 미충족: 현재 함대 " + fleetCount + "개 (3개 이상 필요)");
+                }
+            }
+        }
+    }
+
+    /** 고급 타일 즉발 효과 적용 (기존 applyImmediateTileEffect와 유사하지만 AdvancedTechTileCode 사용) */
+    private void applyImmediateAdvTileEffect(UUID gameId, UUID playerId, GamePlayerState ps,
+                                              AdvancedTechTileCode advTileCode, TechAbility ability) {
+        String effect = ability.getSpecialEffect();
+        if (effect == null) return;
+
+        int vp = 0;
+        switch (effect) {
+            case "VP_PER_SECTOR_BUILDING" -> {
+                long count = countBuildingsInSectors(gameId, playerId);
+                vp = (int) count * 2;
+            }
+            case "ORE_PER_SECTOR_BUILDING" -> {
+                long count = countBuildingsInSectors(gameId, playerId);
+                ps.addOre((int) count);
+            }
+            case "VP_PER_MINE" -> {
+                int mines = 8 - ps.getStockMine();
+                vp = mines * 2;
+            }
+            case "VP_PER_TRADING_STATION" -> {
+                int ts = 4 - ps.getStockTradingStation();
+                vp = ts * 4;
+            }
+            case "VP_PER_FEDERATION_TOKEN" -> {
+                vp = ps.getFederationCount() * 5;
+            }
+            case "VP_PER_GAIA_PLANET" -> {
+                long gaiaCount = gameBuildingRepository.findByGameIdAndPlayerId(gameId, playerId).stream()
+                        .filter(b -> {
+                            var hex = gameHexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR());
+                            return hex.isPresent() && "GAIA".equals(hex.get().getPlanetType());
+                        }).count();
+                vp = (int) gaiaCount * 2;
+            }
+            case "VP_BIG" -> {
+                int bigBuildings = (1 - ps.getStockPlanetaryInstitute()) + (2 - ps.getStockAcademy());
+                vp = bigBuildings * 6;
+            }
+            case "PER_LOST_PLANET_VP4" -> {
+                long lostCount = gameBuildingRepository.findByGameIdAndPlayerId(gameId, playerId).stream()
+                        .filter(b -> {
+                            var hex = gameHexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR());
+                            return hex.isPresent() && "LOST_PLANET".equals(hex.get().getPlanetType());
+                        }).count();
+                vp = (int) lostCount * 4;
+            }
+        }
+
+        if (vp > 0) {
+            ps.addVP(vp);
+            Game vpGame = gameRepository.findById(gameId).orElse(null);
+            Integer round = vpGame != null ? vpGame.getCurrentRound() : null;
+            vpLogService.logVp(gameId, playerId, VpCategory.ADV_TECH_TILE, vp, round,
+                    advTileCode.name() + " 즉발 효과");
+            log.info("[고급타일 즉발] player={}, tile={}, effect={}, vp={}", playerId, advTileCode, effect, vp);
+        }
+    }
+
+    /** 트랙 레벨 조회 헬퍼 */
+    private int getTrackLevel(GamePlayerState ps, String trackCode) {
+        return switch (trackCode) {
             case "TERRA_FORMING" -> ps.getTechTerraforming();
             case "NAVIGATION"    -> ps.getTechNavigation();
             case "AI"            -> ps.getTechAi();
@@ -183,25 +436,15 @@ public class TechTileService {
             case "SCIENCE"       -> ps.getTechScience();
             default -> 0;
         };
+    }
 
-        applyTechTrackReward(ps, advanceTrack, newLevel, economyOption);
-
-        // 8. 즉발(IMMEDIATE) 효과 적용
-        TechAbility ability = techTileCode.getAbility();
-        if (ability.getType() == TechAbilityType.IMMEDIATE) {
-            applyImmediateTileEffect(gameId, playerId, ps, techTileCode, ability);
-        }
-
-        // 9. 라운드 점수 타일: 연구 트랙 1칸 전진당 2VP (건물 건설 시 타일 획득으로 인한 트랙 전진도 포함)
-        com.gaiaproject.domain.entity.game.Game tileGame = gameRepository.findById(gameId).orElse(null);
-        if (tileGame != null && "PLAYING".equals(tileGame.getGamePhase()) && tileGame.getCurrentRound() != null) {
-            roundScoringService.award(gameId, tileGame.getCurrentRound(), ps, RoundScoringEvent.RESEARCH_ADVANCED, 1);
-        }
-
-        gamePlayerStateRepository.save(ps);
-
-        log.info("[타일 획득] game={}, player={}, tile={}, track={}, newLevel={}",
-                gameId, playerId, tileCode, advanceTrack, newLevel);
+    /** 섹터 구역 건물 수 카운트 */
+    private long countBuildingsInSectors(UUID gameId, UUID playerId) {
+        return gameBuildingRepository.findByGameIdAndPlayerId(gameId, playerId).stream()
+                .filter(b -> {
+                    var hex = gameHexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR());
+                    return hex.isPresent() && hex.get().getSectorId() != null;
+                }).count();
     }
 
     /**
@@ -221,9 +464,13 @@ public class TechTileService {
         switch (specialEffect) {
             case "KNOWLEDGE_PER_PLANET_TYPE" -> {
                 // 플레이어 건물이 있는 행성 종류 수만큼 지식 획득
+                // SPACE_STATION(빈 헥스)·GAIAFORMER(TRANSDIM)은 행성이 아니므로 제외
                 List<GameBuilding> buildings = gameBuildingRepository.findByGameIdAndPlayerId(gameId, playerId);
                 Set<String> planetTypes = new HashSet<>();
                 for (GameBuilding b : buildings) {
+                    if (b.getBuildingType() == BuildingType.SPACE_STATION
+                            || b.getBuildingType() == BuildingType.GAIAFORMER
+                            || b.isLantidsMine()) continue;
                     gameHexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR())
                             .map(GameHex::getPlanetType)
                             .ifPresent(pt -> {
@@ -236,6 +483,69 @@ public class TechTileService {
             case "TERRAFORM_2_PLACE_MINE" -> {
                 // FE에서 pending 체인으로 처리 (업그레이드 확정 → 광산 배치 → 확정)
                 log.info("[TILE_IMMEDIATE] TERRAFORM_2_PLACE_MINE - FE pending 체인 처리, game={}, player={}", gameId, playerId);
+            }
+            case "VP_PER_FEDERATION_TOKEN" -> {
+                int tokenCount = federationGroupRepository.findByGameIdAndPlayerId(gameId, playerId).size();
+                int vp = tokenCount * 5;
+                if (vp > 0) {
+                    ps.addVP(vp);
+                    vpLogService.logVp(gameId, playerId, VpCategory.ADV_TECH_TILE, vp, null, "연방 토큰당 5VP (" + tokenCount + "개)");
+                }
+                log.info("[TILE_IMMEDIATE] VP_PER_FEDERATION_TOKEN: tokens={}, vp={}", tokenCount, vp);
+            }
+            case "VP_PER_GAIA_PLANET" -> {
+                long gaiaCount = gameBuildingRepository.findByGameIdAndPlayerId(gameId, playerId).stream()
+                        .filter(b -> {
+                            var hex = gameHexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR()).orElse(null);
+                            return hex != null && hex.getPlanetType() == com.gaiaproject.domain.enumtype.player.PlanetType.GAIA;
+                        }).count();
+                int vp = (int) gaiaCount * 3;
+                if (vp > 0) {
+                    ps.addVP(vp);
+                    vpLogService.logVp(gameId, playerId, VpCategory.ADV_TECH_TILE, vp, null, "가이아 행성당 3VP (" + gaiaCount + "개)");
+                }
+                log.info("[TILE_IMMEDIATE] VP_PER_GAIA_PLANET: gaia={}, vp={}", gaiaCount, vp);
+            }
+            case "VP_PER_SECTOR_BUILDING" -> {
+                Set<Integer> sectors = new HashSet<>();
+                for (var b : gameBuildingRepository.findByGameIdAndPlayerId(gameId, playerId)) {
+                    gameHexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR())
+                            .ifPresent(h -> { if (h.getPositionNo() != null) sectors.add(h.getPositionNo()); });
+                }
+                int vp = sectors.size() * 2;
+                if (vp > 0) {
+                    ps.addVP(vp);
+                    vpLogService.logVp(gameId, playerId, VpCategory.ADV_TECH_TILE, vp, null, "섹터당 2VP (" + sectors.size() + "개)");
+                }
+                log.info("[TILE_IMMEDIATE] VP_PER_SECTOR_BUILDING: sectors={}, vp={}", sectors.size(), vp);
+            }
+            case "VP_PER_MINE" -> {
+                long mineCount = gameBuildingRepository.findByGameIdAndPlayerId(gameId, playerId).stream()
+                        .filter(b -> b.getBuildingType() == com.gaiaproject.domain.enumtype.building.BuildingType.MINE).count();
+                int vp = (int) mineCount * 2;
+                if (vp > 0) {
+                    ps.addVP(vp);
+                    vpLogService.logVp(gameId, playerId, VpCategory.ADV_TECH_TILE, vp, null, "광산당 2VP (" + mineCount + "개)");
+                }
+                log.info("[TILE_IMMEDIATE] VP_PER_MINE: mines={}, vp={}", mineCount, vp);
+            }
+            case "VP_PER_TRADING_STATION" -> {
+                long tsCount = gameBuildingRepository.findByGameIdAndPlayerId(gameId, playerId).stream()
+                        .filter(b -> b.getBuildingType() == com.gaiaproject.domain.enumtype.building.BuildingType.TRADING_STATION).count();
+                int vp = (int) tsCount * 4;
+                if (vp > 0) {
+                    ps.addVP(vp);
+                    vpLogService.logVp(gameId, playerId, VpCategory.ADV_TECH_TILE, vp, null, "교역소당 4VP (" + tsCount + "개)");
+                }
+                log.info("[TILE_IMMEDIATE] VP_PER_TRADING_STATION: ts={}, vp={}", tsCount, vp);
+            }
+            case "VP_PER_TERRAFORMING_STEP" -> {
+                int vp = ps.getTechTerraforming() * 2;
+                if (vp > 0) {
+                    ps.addVP(vp);
+                    vpLogService.logVp(gameId, playerId, VpCategory.ADV_TECH_TILE, vp, null, "테라포밍 단계당 2VP (" + ps.getTechTerraforming() + "단계)");
+                }
+                log.info("[TILE_IMMEDIATE] VP_PER_TERRAFORMING_STEP: level={}, vp={}", ps.getTechTerraforming(), vp);
             }
             default -> {
                 ability.applyTo(ps);
@@ -266,7 +576,7 @@ public class TechTileService {
         if (specialEffect == null) throw new IllegalStateException("액션 타일이 아닙니다: " + tileCode);
 
         switch (specialEffect) {
-            case "CHARGE_POWER_4"      -> ps.chargePower(4);
+            case "CHARGE_POWER_4"      -> ps.chargePowerWithFactionRules(4);
             case "ACTION_ORE_3"        -> ps.addOre(3);
             case "ACTION_KNOWLEDGE_3"  -> ps.addKnowledge(3);
             case "ACTION_QIC_1_CREDIT_5" -> { ps.addQic(1); ps.addCredit(5); }
@@ -279,7 +589,7 @@ public class TechTileService {
 
         log.info("[TECH_ACTION] game={}, player={}, tile={}, effect={}", gameId, playerId, tileCode, specialEffect);
 
-        return actionService.saveActionAndNextTurn(gameId, playerId, ActionType.ADVANCE_TECH,
+        return actionService.saveActionAndNextTurn(gameId, playerId, ActionType.TECH_TILE_ACTION,
                 String.format("{\"tileCode\":\"%s\",\"actionEffect\":\"%s\"}", tileCode, specialEffect));
     }
 
@@ -384,11 +694,11 @@ public class TechTileService {
         return gameTechOfferRepository.findByGameIdOrderByPosition(gameId);
     }
 
-    /** 이번 라운드 ACTION 사용 완료된 타일 코드 Set (게임 내 전체 플레이어) */
-    public Set<String> getActionUsedTileCodes(UUID gameId) {
+    /** 이번 라운드 ACTION 사용 완료된 (playerId:tileCode) Set (플레이어별 개인 추적) */
+    public Set<String> getActionUsedPlayerTileCodes(UUID gameId) {
         return playerTechTileRepository.findByGameId(gameId).stream()
                 .filter(GamePlayerTechTile::isActionUsed)
-                .map(GamePlayerTechTile::getTechTileCode)
+                .map(pt -> pt.getPlayerId().toString() + ":" + pt.getTechTileCode())
                 .collect(java.util.stream.Collectors.toSet());
     }
 
@@ -463,6 +773,9 @@ public class TechTileService {
                                         .federationTileType(offer.getFederationTileType()).build());
                         // 즉시 보상 적용
                         ps.applyIncome(offer.getFederationTileType().getImmediateReward());
+                        if (offer.getFederationTileType().getImmediateReward().vp() > 0) {
+                            vpLogService.logVp(ps.getGameId(), ps.getPlayerId(), VpCategory.FEDERATION_TOKEN, offer.getFederationTileType().getImmediateReward().vp(), null, "5단계 연방 토큰: " + offer.getFederationTileType().name());
+                        }
                         log.info("[TECH_LV5_TERRA] 연방 타일 획득: player={}, tile={}", ps.getPlayerId(), offer.getFederationTileType());
                     }
                 }
@@ -482,7 +795,7 @@ public class TechTileService {
 
         // 모든 트랙 공통: 2→3 전진 시 3파워 순환
         if (newLevel == 3) {
-            ps.chargePower(3);
+            ps.chargePowerWithFactionRules(3);
         }
 
         switch (trackCode) {
@@ -505,32 +818,31 @@ public class TechTileService {
                     ps.addPowerToken(3);
                 }
             }
-            case "ECONOMY" -> {
-                switch (newLevel) {
-                    case 1 -> { ps.addCredit(2); ps.chargePower(1); }
-                    case 2 -> { ps.addOre(1); ps.addCredit(2); ps.chargePower(2); }
-                    case 3 -> {
-                        ps.addOre(1);
-                        if (economyOption == EconomyTrackOption.OPTION_A) {
-                            ps.addCredit(3); ps.addVP(1);
-                        } else {
-                            ps.addCredit(2); ps.chargePower(3);
-                        }
-                    }
-                    case 4 -> {
-                        ps.addOre(2);
-                        if (economyOption == EconomyTrackOption.OPTION_A) {
-                            ps.addCredit(4); ps.addVP(1);
-                        } else {
-                            ps.addCredit(2); ps.chargePower(2);
-                        }
-                    }
-                }
-            }
+            // ECONOMY: 수입 트랙이므로 즉시 보상 없음 (라운드 수입 단계에서 처리)
+            case "ECONOMY" -> {}
             // SCIENCE: 지식 수입은 라운드 수입 단계에서 처리 (즉각 보상 없음)
         }
 
         log.info("[TECH_REWARD] player={}, track={}, level={}", ps.getPlayerId(), trackCode, newLevel);
+    }
+
+    /** 해당 트랙 5단계에 다른 플레이어가 이미 있는지 확인 (본인이 4→5 진입 시도 시 체크) */
+    private boolean isTrackLevel5Occupied(UUID gameId, UUID playerId, String trackCode) {
+        List<GamePlayerState> allPlayers = gamePlayerStateRepository.findByGameId(gameId);
+        for (var ps : allPlayers) {
+            if (ps.getPlayerId().equals(playerId)) continue;
+            int level = switch (trackCode) {
+                case "TERRA_FORMING" -> ps.getTechTerraforming();
+                case "NAVIGATION"    -> ps.getTechNavigation();
+                case "AI"            -> ps.getTechAi();
+                case "GAIA_FORMING"  -> ps.getTechGaia();
+                case "ECONOMY"       -> ps.getTechEconomy();
+                case "SCIENCE"       -> ps.getTechScience();
+                default -> 0;
+            };
+            if (level >= 5) return true;
+        }
+        return false;
     }
 
     /**

@@ -13,5 +13,6 @@ public record FactionAbilityRequest(
         String abilityCode,
         String trackCode,
         Integer hexQ,
-        Integer hexR
+        Integer hexR,
+        Integer qicUsed
 ) {}

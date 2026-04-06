@@ -92,8 +92,8 @@ public class MapService {
         // 1. 게임 시작 여부 확인 - gamePhase가 설정되면 회전 불가
         var game = gameRepository.findById(gameId)
                 .orElseThrow(() -> new IllegalArgumentException("게임을 찾을 수 없습니다"));
-        if (game.getGamePhase() != null) {
-            throw new IllegalStateException("게임 시작 후에는 섹터를 회전할 수 없습니다.");
+        if (!"MAP_ROTATE".equals(game.getGamePhase())) {
+            throw new IllegalStateException("맵 회전은 4명 입장 후 비딩 시작 전에만 가능합니다.");
         }
 
         // 2. 섹터 배치 조회

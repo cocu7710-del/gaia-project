@@ -20,6 +20,9 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -37,6 +40,38 @@ public class ScoringController {
     private final GameSeatRepository seatRepository;
     private final com.gaiaproject.repository.federation.GameFederationGroupRepository federationGroupRepository;
     private final com.gaiaproject.repository.federation.GameFederationBuildingRepository federationBuildingRepository;
+    private final com.gaiaproject.service.VpLogService vpLogService;
+
+    @Operation(summary = "게임 결과 조회 (카테고리별 VP)")
+    @GetMapping("/result")
+    public ResponseEntity<Map<String, Object>> getGameResult(@PathVariable UUID roomId) {
+        var categoryScores = vpLogService.getGameResult(roomId);
+        var seats = seatRepository.findByGameIdOrderBySeatNoAsc(roomId);
+
+        List<Map<String, Object>> players = new ArrayList<>();
+        for (var seat : seats) {
+            if (seat.getPlayerId() == null) continue;
+            Map<String, Object> playerResult = new LinkedHashMap<>();
+            playerResult.put("playerId", seat.getPlayerId().toString());
+            playerResult.put("seatNo", seat.getSeatNo());
+            playerResult.put("factionCode", seat.getFactionType().name());
+            playerResult.put("factionNameKo", seat.getFactionType().getDisplayNameKo());
+
+            Map<String, Integer> cats = new LinkedHashMap<>();
+            var playerCats = categoryScores.getOrDefault(seat.getPlayerId(), Map.of());
+            int total = 0;
+            for (var cat : com.gaiaproject.domain.enumtype.action.VpCategory.values()) {
+                int val = playerCats.getOrDefault(cat, 0);
+                cats.put(cat.name(), val);
+                total += val;
+            }
+            playerResult.put("categoryScores", cats);
+            playerResult.put("totalVP", total);
+            players.add(playerResult);
+        }
+
+        return ResponseEntity.ok(Map.of("players", players));
+    }
 
     @Operation(summary = "라운드 및 최종 점수 타일 조회 (플레이어별 진행도 포함)")
     @GetMapping
@@ -142,11 +177,11 @@ public class ScoringController {
             }
 
             case "FINAL_TILE_SECTORS_WITH_BUILDINGS" -> {
-                Set<Integer> sectors = myBuildings.stream()
+                Set<String> sectors = myBuildings.stream()
                         .map(b -> hexByCoord.get(b.getHexQ() + "," + b.getHexR()))
                         .filter(Objects::nonNull)
-                        .map(GameHex::getPositionNo)
-                        .filter(Objects::nonNull)
+                        .map(GameHex::getSectorId)
+                        .filter(s -> s != null && s.startsWith("SECTOR_"))
                         .collect(Collectors.toSet());
                 yield sectors.size();
             }

@@ -66,6 +66,7 @@ public class FactionAbilityService {
     private final GaiaformingService gaiaformingService;
     private final PowerLeechService powerLeechService;
     private final RoundScoringService roundScoringService;
+    private final com.gaiaproject.repository.tech.GamePlayerTechTileRepository playerTechTileRepository;
 
     /** 의회 건설 여부 확인 */
     private boolean hasPi(GamePlayerState ps) {
@@ -352,13 +353,14 @@ public class FactionAbilityService {
 
         // 테라포밍 액션은 선언형 (FE에서 pending으로 처리) → 여기서는 비테라 액션만
         switch (currentAction) {
-            case "TINK_POWER_4" -> ps.chargePower(4);
+            case "TINK_POWER_4" -> ps.chargePowerWithFactionRules(4);
             case "TINK_QIC_1" -> ps.addQic(1);
             case "TINK_KNOWLEDGE_3" -> ps.addKnowledge(3);
             case "TINK_QIC_2" -> { ps.addQic(1); ps.addQic(1); }
             case "TINK_TERRAFORM_1", "TINK_TERRAFORM_3" -> {
                 // 테라포밍: 사용 마킹만 하고 턴 넘기지 않음 (후속 광산 건설에서 턴 종료)
                 ps.useTinkeroidsCurrentAction();
+                ps.markFactionAbilityUsed();
                 playerStateRepository.save(ps);
                 log.info("[TINKEROIDS] 테라포밍 액션 선언: player={}, action={}", playerId, currentAction);
                 return FactionAbilityResponse.success(gameId, code, null);
@@ -367,6 +369,7 @@ public class FactionAbilityService {
         }
 
         ps.useTinkeroidsCurrentAction();
+        ps.markFactionAbilityUsed();
         playerStateRepository.save(ps);
         log.info("[TINKEROIDS] 액션 사용: player={}, action={}", playerId, currentAction);
 
@@ -439,9 +442,9 @@ public class FactionAbilityService {
 
             try {
                 techTileService.acquireTileForBuilding(gameId, playerId,
-                        request.tileCode(), request.techTrackCode(), game.getEconomyTrackOption());
+                        request.tileCode(), request.techTrackCode(), game.getEconomyTrackOption(),
+                        request.coveredTileCode());
             } catch (IllegalStateException e) {
-                // 실패 시 가이아 복원
                 ps.addGaiaPower(4);
                 playerStateRepository.save(ps);
                 return FactionAbilityResponse.fail(gameId, "ITARS_GAIA_CHOICE", e.getMessage());
@@ -497,11 +500,26 @@ public class FactionAbilityService {
         int navRange = switch (ps.getTechNavigation()) {
             case 0 -> 1; case 1 -> 1; case 2 -> 2; case 3 -> 2; case 4 -> 3; default -> 4;
         };
+        // BASIC_EXP_TILE_1 보유 시 항법 거리 +1
+        if (hasActiveTechTile(gameId, playerId, "BASIC_EXP_TILE_1")) {
+            navRange += 1;
+        }
+        // QIC로 항법 거리 확장 (QIC 1개당 +2)
+        int qicUsed = request.qicUsed() != null ? request.qicUsed() : 0;
+        int finalNavRange = navRange + qicUsed * 2;
         List<GameBuilding> myBuildings = buildingRepository.findByGameIdAndPlayerId(gameId, playerId);
         boolean inRange = myBuildings.stream().anyMatch(b ->
-                HexUtil.distance(b.getHexQ(), b.getHexR(), hexQ, hexR) <= navRange);
+                HexUtil.distance(b.getHexQ(), b.getHexR(), hexQ, hexR) <= finalNavRange);
         if (!inRange) {
-            return FactionAbilityResponse.fail(gameId, code, "항법 거리 밖입니다 (현재 거리: " + navRange + ")");
+            return FactionAbilityResponse.fail(gameId, code, "항법 거리 밖입니다 (현재 거리: " + finalNavRange + ")");
+        }
+        // QIC 소모
+        if (qicUsed > 0) {
+            try {
+                ps.spendQic(qicUsed);
+            } catch (IllegalStateException e) {
+                return FactionAbilityResponse.fail(gameId, code, "QIC가 부족합니다");
+            }
         }
 
         // 우주정거장 배치
@@ -548,9 +566,19 @@ public class FactionAbilityService {
             return FactionAbilityResponse.fail(gameId, code, "이번 라운드에 이미 사용했습니다");
         }
         ps.useQicAcademyAction();
+        // 발타크: 4돈, 그 외: 1QIC
+        if (ps.getFactionType() == com.gaiaproject.domain.enumtype.player.FactionType.BAL_TAKS) {
+            ps.addCredit(4);
+            log.info("[QIC ACADEMY - BAL_TAKS] 크레딧 +4: player={}", playerId);
+        } else {
+            ps.addQic(1);
+            log.info("[QIC ACADEMY] QIC +1: player={}", playerId);
+        }
         playerStateRepository.save(ps);
-        log.info("[QIC ACADEMY] QIC +1: player={}", playerId);
-        return FactionAbilityResponse.success(gameId, code, null);
+
+        var result = actionService.saveActionAndNextTurn(gameId, playerId, ActionType.FACTION_ABILITY,
+                "{\"abilityCode\":\"" + code + "\"}");
+        return FactionAbilityResponse.success(gameId, code, result.nextTurnSeatNo());
     }
 
     /** 건물 좌표 교환 (reflection 없이 직접 setter가 없으므로 GameBuilding에 swapPosition 추가 필요) */
@@ -586,5 +614,12 @@ public class FactionAbilityService {
         var result = actionService.saveActionAndNextTurn(gameId, playerId, ActionType.FACTION_ABILITY,
                 "{\"abilityCode\":\"" + code + "\",\"hexQ\":" + req.hexQ() + ",\"hexR\":" + req.hexR() + "}");
         return FactionAbilityResponse.success(gameId, code, result.nextTurnSeatNo());
+    }
+
+    private boolean hasActiveTechTile(UUID gameId, UUID playerId, String tileCode) {
+        return playerTechTileRepository
+                .findByGameIdAndPlayerIdAndIsCovered(gameId, playerId, false)
+                .stream()
+                .anyMatch(t -> tileCode.equals(t.getTechTileCode()));
     }
 }

@@ -23,6 +23,7 @@ public enum PlanetType {
 
     /* 확장 행성 */
     LOST_PLANET("Lost_Planet", "초월 차원"),
+    BLACK_PLANET("Black_Planet", "검은행성"),
     ASTEROIDS("Asteroids", "소행성"),
 
     /* 우주구역 */

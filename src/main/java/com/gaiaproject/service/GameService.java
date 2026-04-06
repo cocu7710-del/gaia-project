@@ -43,6 +43,7 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 @Transactional
+@lombok.extern.slf4j.Slf4j
 public class GameService {
 
     /** 방(게임) 저장소 */
@@ -92,9 +93,19 @@ public class GameService {
 
     /** 함대 탐사선 저장소 **/
     private final com.gaiaproject.repository.player.GamePlayerFleetProbeRepository fleetProbeRepository;
+    private final com.gaiaproject.repository.game.GamePlayerPassRepository gamePlayerPassRepository;
+
+    /** 액션 서비스 (턴 타이머) **/
+    private final ActionService actionService;
 
     /** 광산 배치 순서 계산 서비스 */
     private final MineSetupOrderService mineSetupOrderService;
+
+    /** 비딩 서비스 */
+    private final BiddingService biddingService;
+
+    /** 등록된 플레이어 저장소 (닉네임 화이트리스트) */
+    private final com.gaiaproject.repository.player.RegisteredPlayerRepository registeredPlayerRepository;
 
     private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -177,6 +188,11 @@ public class GameService {
             return EnterGameResponse.spectator(roomId);
         }
 
+        // 2-1) 등록된 닉네임인지 확인 (관전자 제외)
+        if (registeredPlayerRepository.findByNickname(nickname).isEmpty()) {
+            return EnterGameResponse.notRegistered(roomId);
+        }
+
         // 3) 닉네임 중복 확인 → 재입장 처리
         Optional<GameParticipant> existingParticipant = gameParticipantRepository.findByGameIdAndNickname(roomId, nickname);
         if (existingParticipant.isPresent()) {
@@ -210,10 +226,30 @@ public class GameService {
         // 7) WebSocket 브로드캐스트 - 새 플레이어 입장 알림
         webSocketService.broadcastPlayerJoined(roomId, player.getId(), nickname);
 
-        // 8) 응답 (rejoinToken 포함)
+        // 8) 4명 입장 시 맵 회전 페이즈로 전환 (비딩은 수동 시작)
+        long newCount = gameParticipantRepository.countByGameId(roomId);
+        if (newCount >= 4) {
+            Game game = gameRepository.findById(roomId).orElseThrow();
+            game.startMapRotate();
+            gameRepository.save(game);
+            webSocketService.broadcastStateUpdated(roomId);
+        }
+
+        // 9) 응답 (rejoinToken 포함)
         return EnterGameResponse.player(roomId, player.getId(), participant.getRejoinToken());
     }
 
+    /**
+     * 비딩 수동 시작 (4명 입장 + MAP_ROTATE 페이즈에서만 가능)
+     */
+    public void startBidding(UUID roomId) {
+        Game game = gameRepository.findById(roomId)
+                .orElseThrow(() -> new IllegalArgumentException("room not found: " + roomId));
+        if (!"MAP_ROTATE".equals(game.getGamePhase())) {
+            throw new IllegalStateException("4명 입장 후 맵 회전 페이즈에서만 비딩을 시작할 수 있습니다.");
+        }
+        biddingService.startBidding(roomId);
+    }
 
     /**
      * 좌석 선점(턴 선택)
@@ -226,61 +262,19 @@ public class GameService {
      * 5) 선점 처리(seat.playerId 업데이트 + participant.claimedSeatNo 업데이트)
      * 6) 최신 public-state 반환(프론트가 즉시 갱신 가능)
      */
-    public ClaimSeatResponse claimSeat(UUID roomId, int seatNo, UUID playerId) {
-        // 1) 방 존재 확인
-        Game game = gameRepository.findById(roomId).orElse(null);
-        if (game == null) {
-            return ClaimSeatResponse.fail(roomId, "방을 찾을 수 없습니다.");
-        }
-
-        // 2) 입장 여부 확인 (playerId 위조/실수 방지)
-        GameParticipant participant = gameParticipantRepository.findByGameIdAndPlayerId(roomId, playerId)
-                .orElse(null);
-        if (participant == null) {
-            return ClaimSeatResponse.fail(roomId, "방에 입장하지 않은 플레이어입니다.");
-        }
-
-        // 3) 좌석 번호 검증(1~4 고정)
-        if (seatNo < 1 || seatNo > 4) {
-            return ClaimSeatResponse.fail(roomId, "좌석 번호는 1~4 사이여야 합니다.");
-        }
-
-        // 4) 좌석 row 조회
-        GameSeat seat = gameSeatRepository.findByGameIdAndSeatNo(roomId, seatNo).orElse(null);
-        if (seat == null) {
-            return ClaimSeatResponse.fail(roomId, "좌석을 찾을 수 없습니다.");
-        }
-
-        // 5) 이미 선점된 좌석이면 실패
-        if (seat.getPlayerId() != null) {
-            return ClaimSeatResponse.fail(roomId, "이미 선점된 좌석입니다. seatNo=" + seatNo);
-        }
-
-        // 6) 같은 플레이어가 이미 다른 좌석을 선점했는지 방어
-        boolean alreadyClaimed = gameSeatRepository.findByGameIdOrderBySeatNoAsc(roomId).stream()
-                .anyMatch(s -> playerId.equals(s.getPlayerId()));
-        if (alreadyClaimed) {
-            return ClaimSeatResponse.fail(roomId, "이미 좌석을 선택한 플레이어입니다.");
-        }
-
-        // 7) 선점 처리 (dirty checking으로 update됨)
-        seat.claim(playerId);
-        participant.claimSeat(seatNo);
-
-        // 8) 플레이어 상태 생성 (종족 초기 자원 적용)
-        GamePlayerState playerState = GamePlayerState.createWithFaction(
-                roomId,
-                playerId,
-                seatNo,
-                seat.getFactionType()
+    /** [임시 디버그] 닉네임으로 playerId + rejoinToken 조회 */
+    public java.util.Map<String, String> debugGetToken(UUID roomId, String nickname) {
+        var participant = gameParticipantRepository.findByGameIdAndNickname(roomId, nickname).orElse(null);
+        if (participant == null) return java.util.Map.of("error", "not found");
+        return java.util.Map.of(
+                "playerId", participant.getPlayerId().toString(),
+                "rejoinToken", participant.getRejoinToken()
         );
-        playerStateRepository.save(playerState);
+    }
 
-        // 9) WebSocket 브로드캐스트 - 좌석 선택 알림
-        webSocketService.broadcastSeatClaimed(roomId, playerId, seatNo, seat.getFactionType().getDisplayNameKo());
-
-        // 10) 성공 응답
-        return ClaimSeatResponse.success(roomId, getPublicState(roomId));
+    public ClaimSeatResponse claimSeat(UUID roomId, int seatNo, UUID playerId) {
+        // 비딩 시스템 활성화: 직접 좌석 선택 불가 (비딩을 통해서만 좌석 선택)
+        return ClaimSeatResponse.fail(roomId, "좌석은 비딩을 통해서만 선택할 수 있습니다.");
     }
 
     /**
@@ -352,6 +346,8 @@ public class GameService {
                 game.getStatus(),
                 game.getCurrentRound(),
                 economyOption,
+                game.getCommonAdvTileCondition() != null ? game.getCommonAdvTileCondition().name() : null,
+                game.getCreatedAt() != null ? game.getCreatedAt().toString() : null,
                 gamePhase,
                 nextSetupSeatNo,
                 currentTurnSeatNo,
@@ -359,8 +355,24 @@ public class GameService {
                 game.getMoweidsExtraRingPlanet(),
                 pendingSpecialPlayerId,
                 pendingSpecialData,
-                seats
+                seats,
+                getPassedSeatNos(game)
         );
+    }
+
+    /** 이번 라운드 패스한 좌석 번호 목록 (패스 순서대로) */
+    private java.util.List<Integer> getPassedSeatNos(Game game) {
+        if (game.getCurrentRound() == null || !"PLAYING".equals(game.getGamePhase())) {
+            return java.util.List.of();
+        }
+        var passes = gamePlayerPassRepository.findByGameIdAndRoundNumber(game.getId(), game.getCurrentRound());
+        var seatMap = gameSeatRepository.findByGameIdOrderBySeatNoAsc(game.getId()).stream()
+                .collect(java.util.stream.Collectors.toMap(s -> s.getPlayerId(), s -> s.getSeatNo()));
+        return passes.stream()
+                .sorted((a, b) -> a.getPassedAt().compareTo(b.getPassedAt()))
+                .map(p -> seatMap.get(p.getPlayerId()))
+                .filter(java.util.Objects::nonNull)
+                .toList();
     }
 
     /**
@@ -520,7 +532,39 @@ public class GameService {
         if (nextSeatNo == 0) {
             game.startPlaying();
             gameRepository.save(game);
-            incomeService.applyRoundIncome(game);
+
+            // 비파워 수입만 먼저 적용
+            incomeService.applyNonPowerIncome(game);
+
+            // 파워 수입 선택 페이즈 체크 (동시 진행)
+            try {
+                java.util.List<GamePlayerState> allPlayersForPower = playerStateRepository.findByGameId(roomId);
+                java.util.List<java.util.Map<String, Object>> allPlayerItems = new java.util.ArrayList<>();
+                for (var ps : allPlayersForPower) {
+                    var powerItems = incomeService.calculatePowerIncomeItems(roomId, ps, game.getEconomyTrackOption());
+                    if (!powerItems.isEmpty()) {
+                        var itemMaps = powerItems.stream().map(item -> java.util.Map.<String, Object>of(
+                                "id", item.id(), "source", item.source(), "label", item.label(),
+                                "powerCharge", item.powerCharge(), "powerBowl1", item.powerBowl1()
+                        )).toList();
+                        allPlayerItems.add(java.util.Map.of(
+                                "playerId", ps.getPlayerId().toString(),
+                                "items", itemMaps
+                        ));
+                    }
+                }
+                if (!allPlayerItems.isEmpty()) {
+                    game.setGamePhase("POWER_INCOME_PHASE");
+                    gameRepository.save(game);
+                    webSocketService.broadcast(com.gaiaproject.dto.websocket.GameEvent.of(roomId, "POWER_INCOME_CHOICE",
+                            java.util.Map.of("players", allPlayerItems)));
+                    log.info("R1 파워 수입 동시 선택 대기: game={}, 대상 {}명", roomId, allPlayerItems.size());
+                    return SelectBoosterResponse.success(roomId, nextSeatNo);
+                }
+            } catch (Exception e) {
+                log.error("R1 파워 수입 체크 중 오류 — 기존 플로우 진행: {}", e.getMessage(), e);
+                incomeService.applyRoundIncome(game);
+            }
 
             // 팅커로이드 PI 체크 (셋업 시 PI 배치하므로 라운드 1부터 적용)
             java.util.List<GamePlayerState> allPlayers = playerStateRepository.findByGameId(roomId);
@@ -594,6 +638,9 @@ public class GameService {
         }
 
         gameRepository.save(game);
+
+        // 5-3) 첫 배치 플레이어 턴 타이머 시작
+        actionService.startTurnTimerBySeatNo(roomId, game.getCurrentSetupSeatNo());
 
         // 6) WebSocket 브로드캐스트 - 게임 시작 알림
         webSocketService.broadcastGameStarted(roomId, game.getGamePhase(), game.getCurrentSetupSeatNo());
@@ -780,9 +827,13 @@ public class GameService {
                         p.getPermanentlyRemovedGaiaformers(),
                         hasQicAcademy,
                         p.isQicAcademyActionUsed(),
-                        p.getTinkeroidsCurrentAction()
+                        p.getTinkeroidsCurrentAction(),
+                        p.getBidPenalty(),
+                        p.getUsedTimeSeconds(),
+                        p.getTurnStartedAt() != null ? String.valueOf(p.getTurnStartedAt().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()) : null
                     );
                 })
                 .collect(Collectors.toList());
     }
+
 }

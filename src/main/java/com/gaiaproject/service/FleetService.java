@@ -3,6 +3,7 @@ package com.gaiaproject.service;
 import com.gaiaproject.domain.entity.player.GamePlayerFleetProbe;
 import com.gaiaproject.domain.entity.player.GamePlayerState;
 import com.gaiaproject.domain.enumtype.action.ActionType;
+import com.gaiaproject.domain.enumtype.action.VpCategory;
 import com.gaiaproject.dto.response.ConfirmActionResponse;
 import com.gaiaproject.dto.response.FleetOccupancyResponse;
 import com.gaiaproject.dto.response.FleetProbeStatusResponse;
@@ -29,6 +30,7 @@ public class FleetService {
     private final GamePlayerFleetProbeRepository fleetProbeRepository;
     private final GamePlayerStateRepository playerStateRepository;
     private final ActionService actionService;
+    private final VpLogService vpLogService;
 
     private static final Map<String, List<String>> FLEET_ACTIONS = Map.of(
             "TF_MARS", List.of("FLEET_TF_MARS_1", "FLEET_TF_MARS_2"),
@@ -57,14 +59,27 @@ public class FleetService {
         GamePlayerState playerState = playerStateRepository.findByGameIdAndPlayerId(gameId, playerId)
                 .orElseThrow(() -> new IllegalStateException("플레이어 상태를 찾을 수 없습니다"));
 
-        if (playerState.getVictoryPoints() < 5) {
-            return PlaceFleetProbeResponse.fail(gameId, playerId, "함대 입장에 VP 5가 필요합니다 (현재: " + playerState.getVictoryPoints() + ")");
+        // 타클론: 브레인스톤을 가이아 구역으로 보낼 수 있어야 함대 입장 가능
+        boolean isTaklons = playerState.getFactionType() == com.gaiaproject.domain.enumtype.player.FactionType.TAKLONS;
+        if (isTaklons) {
+            Integer bsBowl = playerState.getBrainstoneBowl();
+            // 브레인스톤이 가이아(0)에 있으면 다시 가이아로 보낼 수 없음 → 입장 불가
+            if (bsBowl == null || bsBowl == 0) {
+                return PlaceFleetProbeResponse.fail(gameId, playerId, "브레인스톤을 가이아 구역으로 보낼 수 없어 함대 입장이 불가능합니다");
+            }
+        }
+
+        boolean isBalTaks = playerState.getFactionType() == com.gaiaproject.domain.enumtype.player.FactionType.BAL_TAKS;
+        int biddingCost = isBalTaks ? 7 : 5;
+        if (playerState.getVictoryPoints() < biddingCost) {
+            return PlaceFleetProbeResponse.fail(gameId, playerId, "함대 입장에 VP " + biddingCost + "가 필요합니다 (현재: " + playerState.getVictoryPoints() + ")");
         }
 
         // 현재 함대 입장 인원 수 (0-based slot index for new entry)
         int slotIndex = fleetProbeRepository.countByGameIdAndFleetName(gameId, fleetName);
 
-        playerState.spendVP(5);
+        playerState.spendVP(biddingCost);
+        vpLogService.logVp(playerState.getGameId(), playerState.getPlayerId(), VpCategory.FLEET, -biddingCost, null, "함대 입장 -" + biddingCost + "VP");
         // 항법 QIC 소모
         if (qicUsed > 0) {
             playerState.spendQic(qicUsed);
@@ -81,11 +96,16 @@ public class FleetService {
             else if (playerState.getPowerBowl2() > 0) playerState.removePowerFromBowl2(1);
             else playerState.removePowerFromBowl3(1);
         }
+        // 타클론: 브레인스톤을 가이아 구역으로 이동
+        if (isTaklons && playerState.getBrainstoneBowl() != null && playerState.getBrainstoneBowl() != 0) {
+            playerState.setBrainstoneBowl(0); // 0 = 가이아 구역
+        }
+
         // 2, 3번째 입장: 파워 2 순환 / 4번째 입장: 파워 3 순환
         if (slotIndex == 1 || slotIndex == 2) {
-            playerState.chargePower(2);
+            playerState.chargePowerWithFactionRules(2);
         } else if (slotIndex == 3) {
-            playerState.chargePower(3);
+            playerState.chargePowerWithFactionRules(3);
         }
         playerStateRepository.save(playerState);
 

@@ -51,8 +51,13 @@ public class FreeConvertService {
                 }
                 case "ORE_TO_TOKEN" -> {
                     ps.spendOre(1);
-                    ps.addPowerToken(1);
-                    log.info("[FREE] 광석→파워토큰: player={}", playerId);
+                    if (ps.getFactionType() == com.gaiaproject.domain.enumtype.player.FactionType.XENOS) {
+                        ps.gainPower(1);  // 제노스: 3구역에 토큰 추가
+                        log.info("[FREE] 광석→3구역파워(XENOS): player={}", playerId);
+                    } else {
+                        ps.addPowerToken(1);
+                        log.info("[FREE] 광석→파워토큰: player={}", playerId);
+                    }
                 }
                 case "ORE_TO_POWER3" -> {
                     ps.spendOre(1);

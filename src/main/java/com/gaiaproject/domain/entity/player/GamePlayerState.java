@@ -67,6 +67,14 @@ public class GamePlayerState {
     @Column(name = "victory_points", nullable = false)
     private Integer victoryPoints = 0;
 
+    // 비딩 패널티 (게임 종료 시 VP 차감)
+    @Column(name = "bid_penalty", nullable = false)
+    private int bidPenalty = 0;
+
+    public void setBidPenalty(int bidPenalty) {
+        this.bidPenalty = bidPenalty;
+    }
+
     // 브레인스톤 (타클론 전용, null: 없음, 1/2/3: 해당 bowl)
     @Column(name = "brainstone_bowl")
     private Integer brainstoneBowl;
@@ -146,6 +154,27 @@ public class GamePlayerState {
 
     public void incrementFederationCount() {
         this.federationCount++;
+    }
+
+    // 턴 사용 시간 추적
+    @Column(name = "used_time_seconds", nullable = false)
+    private int usedTimeSeconds = 0;
+
+    @Column(name = "turn_started_at")
+    private LocalDateTime turnStartedAt;
+
+    /** 턴 타이머 시작 */
+    public void startTurnTimer() {
+        this.turnStartedAt = LocalDateTime.now();
+    }
+
+    /** 턴 타이머 종료 + 누적 */
+    public void stopTurnTimer() {
+        if (this.turnStartedAt != null) {
+            long elapsed = java.time.Duration.between(this.turnStartedAt, LocalDateTime.now()).getSeconds();
+            this.usedTimeSeconds += (int) Math.max(0, elapsed);
+            this.turnStartedAt = null;
+        }
     }
 
     @Column(name = "created_at", nullable = false)
@@ -401,7 +430,9 @@ public class GamePlayerState {
      * @param required 가이아 트랙 레벨별 필요 파워량
      */
     public void spendPowerToGaia(int required) {
-        int total = powerBowl1 + powerBowl2 + powerBowl3;
+        // 타클론 브레인스톤도 토큰 1개로 카운트
+        int brainstoneCount = (brainstoneBowl != null && brainstoneBowl >= 1 && brainstoneBowl <= 3) ? 1 : 0;
+        int total = powerBowl1 + powerBowl2 + powerBowl3 + brainstoneCount;
         if (total < required) {
             throw new IllegalStateException("파워 토큰이 부족합니다. 필요: " + required + ", 보유: " + total);
         }
@@ -410,16 +441,32 @@ public class GamePlayerState {
         int fromBowl1 = Math.min(powerBowl1, remaining);
         powerBowl1 -= fromBowl1;
         remaining -= fromBowl1;
+        // 타클론 브레인스톤 (bowl1에 있으면 가이아 구역으로)
+        if (remaining > 0 && brainstoneBowl != null && brainstoneBowl == 1) {
+            brainstoneBowl = 0; // 가이아 구역
+            remaining--;
+        }
         // bowl2
         if (remaining > 0) {
             int fromBowl2 = Math.min(powerBowl2, remaining);
             powerBowl2 -= fromBowl2;
             remaining -= fromBowl2;
         }
+        // 타클론 브레인스톤 (bowl2에 있으면 가이아 구역으로)
+        if (remaining > 0 && brainstoneBowl != null && brainstoneBowl == 2) {
+            brainstoneBowl = 0;
+            remaining--;
+        }
         // bowl3
         if (remaining > 0) {
             int fromBowl3 = Math.min(powerBowl3, remaining);
             powerBowl3 -= fromBowl3;
+            remaining -= fromBowl3;
+        }
+        // 타클론 브레인스톤 (bowl3에 있으면 가이아 구역으로)
+        if (remaining > 0 && brainstoneBowl != null && brainstoneBowl == 3) {
+            brainstoneBowl = 0;
+            remaining--;
         }
         gaiaPower += required;
         this.updatedAt = LocalDateTime.now();
@@ -452,6 +499,10 @@ public class GamePlayerState {
             this.powerBowl1 += this.gaiaPower;
         }
         this.gaiaPower = 0;
+        // 타클론 브레인스톤이 가이아 구역(0)에 있으면 bowl1으로 복귀
+        if (this.brainstoneBowl != null && this.brainstoneBowl == 0) {
+            this.brainstoneBowl = 1;
+        }
         this.updatedAt = LocalDateTime.now();
     }
 
@@ -582,9 +633,8 @@ public class GamePlayerState {
         this.updatedAt = java.time.LocalDateTime.now();
     }
 
-    /** 팅커로이드: 현재 라운드 액션 사용 */
+    /** 팅커로이드: 현재 라운드 액션 사용 (액션 코드 유지, factionAbilityUsed로 사용 여부 판단) */
     public void useTinkeroidsCurrentAction() {
-        this.tinkeroidsCurrentAction = null;
         this.updatedAt = java.time.LocalDateTime.now();
     }
 
@@ -606,7 +656,6 @@ public class GamePlayerState {
             throw new IllegalStateException("이번 라운드에 이미 QIC 아카데미 액션을 사용했습니다.");
         }
         this.qicAcademyActionUsed = true;
-        this.addQic(1);
         this.updatedAt = java.time.LocalDateTime.now();
     }
 
@@ -662,14 +711,20 @@ public class GamePlayerState {
     }
 
     /** 파워 소각: bowl2에서 2개 제거 → 1개는 bowl3, 아이타는 추가로 1개가 가이아 구역 */
+    /** 타클론: 브레인스톤이 bowl2에 있으면 브레인스톤을 먼저 bowl3로 이동 (일반 1개만 제거) */
     public void burnPower() {
-        if (this.powerBowl2 < 2) throw new IllegalStateException("2구역 파워가 부족합니다. 보유: " + this.powerBowl2);
-        this.powerBowl2 -= 2;
-        if (this.factionType == com.gaiaproject.domain.enumtype.player.FactionType.ITARS) {
-            this.powerBowl3 += 1;  // 1개는 3구역
-            this.gaiaPower += 1;   // 1개는 가이아 구역
+        if (this.brainstoneBowl != null && this.brainstoneBowl == 2) {
+            // 브레인스톤 bowl3로 이동 + 일반 1개 제거
+            if (this.powerBowl2 < 1) throw new IllegalStateException("2구역 파워가 부족합니다.");
+            this.powerBowl2 -= 1;
+            this.brainstoneBowl = 3;
         } else {
-            this.powerBowl3 += 1;  // 일반: 1개만 3구역 (1개 영구 제거)
+            if (this.powerBowl2 < 2) throw new IllegalStateException("2구역 파워가 부족합니다. 보유: " + this.powerBowl2);
+            this.powerBowl2 -= 2;
+            this.powerBowl3 += 1;
+        }
+        if (this.factionType == com.gaiaproject.domain.enumtype.player.FactionType.ITARS) {
+            this.gaiaPower += 1;
         }
         this.updatedAt = LocalDateTime.now();
     }

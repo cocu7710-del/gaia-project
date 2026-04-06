@@ -3,18 +3,23 @@ package com.gaiaproject.service;
 import com.gaiaproject.domain.entity.game.Game;
 import com.gaiaproject.domain.entity.game.GameAction;
 import com.gaiaproject.domain.entity.game.GameSeat;
+import com.gaiaproject.domain.entity.player.GamePlayerState;
 import com.gaiaproject.domain.enumtype.action.ActionType;
+import com.gaiaproject.dto.response.ActionLogEntry;
 import com.gaiaproject.dto.response.ConfirmActionResponse;
 import com.gaiaproject.repository.game.GameActionRepository;
 import com.gaiaproject.repository.game.GamePlayerPassRepository;
 import com.gaiaproject.repository.game.GameRepository;
 import com.gaiaproject.repository.game.GameSeatRepository;
+import com.gaiaproject.repository.player.GamePlayerStateRepository;
 import org.springframework.transaction.annotation.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -32,6 +37,7 @@ public class ActionService {
     private final GamePlayerPassRepository passRepository;
     private final GameRepository gameRepository;
     private final GameSeatRepository seatRepository;
+    private final GamePlayerStateRepository playerStateRepository;
     private final GameWebSocketService webSocketService;
 
     /**
@@ -59,8 +65,12 @@ public class ActionService {
                     .build();
 
             action = actionRepository.save(action);
+            broadcastActionLog(gameId, playerId, action, currentRound, turnSequence);
 
             log.info("액션 저장: actionId={}, type={}, player={}", action.getId(), actionType, playerId);
+
+            // 현재 플레이어 타이머 종료
+            stopTurnTimer(gameId, playerId);
 
             // 다음 턴 계산
             int nextSeatNo = calculateNextTurnSeatNo(game);
@@ -70,11 +80,15 @@ public class ActionService {
                 // 라운드 종료 처리
                 endRoundAndStartNext(game);
                 webSocketService.broadcastRoundStarted(gameId, game.getCurrentRound());
+                // 새 라운드 첫 플레이어 타이머 시작
+                startTurnTimerBySeatNo(gameId, game.getCurrentTurnSeatNo());
             } else {
                 // 턴 넘김
                 game.nextTurn(nextSeatNo);
                 gameRepository.save(game);
                 webSocketService.broadcastTurnChanged(gameId, nextSeatNo);
+                // 다음 플레이어 타이머 시작
+                startTurnTimerBySeatNo(gameId, nextSeatNo);
             }
 
             return ConfirmActionResponse.success(gameId, action.getId(), nextSeatNo, roundEnded);
@@ -99,24 +113,64 @@ public class ActionService {
                 .roundNumber(currentRound).turnSequence(turnSequence)
                 .actionType(actionType).actionData(actionData)
                 .build();
-        actionRepository.save(action);
+        action = actionRepository.save(action);
+        broadcastActionLog(gameId, playerId, action, currentRound, turnSequence);
         log.info("액션 저장(리치 대기): actionType={}, player={}", actionType, playerId);
+    }
+
+    /** 액션 로그 브로드캐스트 */
+    private void broadcastActionLog(UUID gameId, UUID playerId, GameAction action, int round, int turnSeq) {
+        try {
+            // POWER_INCOME은 로그 표시하지 않음
+            if (action.getActionType() == ActionType.POWER_INCOME) return;
+
+            GameSeat seat = seatRepository.findByGameIdAndPlayerId(gameId, playerId).orElse(null);
+            int seatNo = seat != null ? seat.getSeatNo() : 0;
+            String factionCode = seat != null && seat.getFactionType() != null ? seat.getFactionType().name() : "";
+
+            Map<String, Object> dataMap = new LinkedHashMap<>();
+            if (action.getActionData() != null && !action.getActionData().isEmpty()) {
+                try {
+                    dataMap = new com.fasterxml.jackson.databind.ObjectMapper().readValue(action.getActionData(), Map.class);
+                } catch (Exception ignored) {}
+            }
+
+            Map<String, Object> logPayload = new LinkedHashMap<>();
+            logPayload.put("actionId", action.getId().toString());
+            logPayload.put("playerId", playerId.toString());
+            logPayload.put("seatNo", seatNo);
+            logPayload.put("factionCode", factionCode);
+            logPayload.put("roundNumber", round);
+            logPayload.put("turnSequence", turnSeq);
+            logPayload.put("actionType", action.getActionType().name());
+            logPayload.put("actionData", dataMap);
+
+            webSocketService.broadcast(com.gaiaproject.dto.websocket.GameEvent.of(gameId, "ACTION_LOGGED",
+                    Map.of("entry", logPayload)));
+        } catch (Exception e) {
+            log.warn("액션 로그 브로드캐스트 실패: {}", e.getMessage());
+        }
     }
 
     /**
      * 턴 진행 + 브로드캐스트 — 파워 리치 해소 완료 후 호출
      */
     public void advanceTurnAndBroadcast(Game game) {
+        // 현재 플레이어 타이머 종료
+        stopTurnTimerBySeatNo(game.getId(), game.getCurrentTurnSeatNo());
+
         int nextSeatNo = calculateNextTurnSeatNo(game);
         boolean roundEnded = (nextSeatNo == 0);
 
         if (roundEnded) {
             endRoundAndStartNext(game);
             webSocketService.broadcastRoundStarted(game.getId(), game.getCurrentRound());
+            startTurnTimerBySeatNo(game.getId(), game.getCurrentTurnSeatNo());
         } else {
             game.nextTurn(nextSeatNo);
             gameRepository.save(game);
             webSocketService.broadcastTurnChanged(game.getId(), nextSeatNo);
+            startTurnTimerBySeatNo(game.getId(), nextSeatNo);
         }
     }
 
@@ -128,28 +182,36 @@ public class ActionService {
         int currentRound = game.getCurrentRound();
         int currentSeatNo = game.getCurrentTurnSeatNo();
 
-        // 모든 좌석 조회
-        List<GameSeat> seats = seatRepository.findByGameIdOrderBySeatNo(gameId);
-        int maxSeatNo = seats.size();
+        // 점유된 좌석만 추출
+        List<GameSeat> occupied = seatRepository.findByGameIdOrderBySeatNo(gameId).stream()
+                .filter(s -> s.getPlayerId() != null)
+                .collect(java.util.stream.Collectors.toList());
 
-        // 패스하지 않은 플레이어 찾기 (순환)
-        for (int i = 1; i <= maxSeatNo; i++) {
-            int nextSeatNo = (currentSeatNo % maxSeatNo) + 1;
-            currentSeatNo = nextSeatNo;
+        // turnOrder가 설정된 경우(라운드 2+) 이전 라운드 패스 순서 기준 정렬, 아니면 seatNo 기준 유지
+        boolean hasTurnOrder = occupied.stream().anyMatch(s -> s.getTurnOrder() > 0);
+        if (hasTurnOrder) {
+            occupied.sort(java.util.Comparator.comparingInt(GameSeat::getTurnOrder));
+        }
 
-            // 해당 좌석의 플레이어가 패스했는지 확인
-            GameSeat seat = seats.stream()
-                    .filter(s -> s.getSeatNo() == nextSeatNo)
-                    .findFirst()
-                    .orElse(null);
+        // 현재 좌석의 위치 찾기
+        int currentIdx = -1;
+        for (int i = 0; i < occupied.size(); i++) {
+            if (occupied.get(i).getSeatNo() == currentSeatNo) {
+                currentIdx = i;
+                break;
+            }
+        }
 
-            if (seat != null && seat.getPlayerId() != null) {
-                boolean hasPassed = passRepository.existsByGameIdAndPlayerIdAndRoundNumber(
-                        gameId, seat.getPlayerId(), currentRound);
+        // 다음 패스 안 한 플레이어 찾기 (순환)
+        for (int i = 1; i <= occupied.size(); i++) {
+            int nextIdx = (currentIdx + i) % occupied.size();
+            GameSeat seat = occupied.get(nextIdx);
 
-                if (!hasPassed) {
-                    return nextSeatNo;
-                }
+            boolean hasPassed = passRepository.existsByGameIdAndPlayerIdAndRoundNumber(
+                    gameId, seat.getPlayerId(), currentRound);
+
+            if (!hasPassed) {
+                return seat.getSeatNo();
             }
         }
 
@@ -178,5 +240,42 @@ public class ActionService {
         gameRepository.save(game);
 
         log.info("라운드 {} 시작", game.getCurrentRound());
+    }
+
+    // ===== 턴 타이머 헬퍼 =====
+
+    /** playerId로 타이머 종료 + 누적 */
+    public void stopTurnTimer(UUID gameId, UUID playerId) {
+        playerStateRepository.findByGameIdAndPlayerId(gameId, playerId).ifPresent(ps -> {
+            ps.stopTurnTimer();
+            playerStateRepository.save(ps);
+        });
+    }
+
+    /** seatNo로 타이머 종료 + 누적 */
+    public void stopTurnTimerBySeatNo(UUID gameId, int seatNo) {
+        var seat = seatRepository.findByGameIdAndSeatNo(gameId, seatNo);
+        if (seat.isPresent() && seat.get().getPlayerId() != null) {
+            stopTurnTimer(gameId, seat.get().getPlayerId());
+        }
+    }
+
+    /** seatNo로 타이머 시작 */
+    public void startTurnTimerBySeatNo(UUID gameId, int seatNo) {
+        var seat = seatRepository.findByGameIdAndSeatNo(gameId, seatNo);
+        if (seat.isPresent() && seat.get().getPlayerId() != null) {
+            playerStateRepository.findByGameIdAndPlayerId(gameId, seat.get().getPlayerId()).ifPresent(ps -> {
+                ps.startTurnTimer();
+                playerStateRepository.save(ps);
+            });
+        }
+    }
+
+    /** playerId로 타이머 시작 */
+    public void startTurnTimer(UUID gameId, UUID playerId) {
+        playerStateRepository.findByGameIdAndPlayerId(gameId, playerId).ifPresent(ps -> {
+            ps.startTurnTimer();
+            playerStateRepository.save(ps);
+        });
     }
 }

@@ -17,4 +17,6 @@ public interface GameActionRepository extends JpaRepository<GameAction, UUID> {
      * 특정 플레이어의 액션 조회
      */
     List<GameAction> findByGameIdAndPlayerId(UUID gameId, UUID playerId);
+
+    List<GameAction> findByGameIdOrderByCreatedAtAsc(UUID gameId);
 }

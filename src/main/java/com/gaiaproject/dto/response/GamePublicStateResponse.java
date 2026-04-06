@@ -16,6 +16,8 @@ public record GamePublicStateResponse(
         String status,
         Integer currentRound,
         String economyTrackOption,  // OPTION_A 또는 OPTION_B (게임 시작 후)
+        String commonAdvTileCondition, // VP_25 또는 FLEET_3 (게임 시작 후)
+        String createdAt,           // 방 생성 시간 (ISO 형식)
 
         @Schema(description = "게임 페이즈 (SETUP_MINE_FIRST, SETUP_MINE_SECOND, PLAYING)")
         String gamePhase,
@@ -38,7 +40,10 @@ public record GamePublicStateResponse(
         @Schema(description = "특수 페이즈 부가 정보 (아이타: 선택 가능 횟수, 팅커로이드: 선택 가능 액션 목록)")
         java.util.Map<String, Object> pendingSpecialData,
 
-        List<SeatView> seats
+        List<SeatView> seats,
+
+        @Schema(description = "이번 라운드 패스한 좌석 번호 목록")
+        List<Integer> passedSeatNos
 ) {
     /**
      * 좌석(턴) 미리보기 정보

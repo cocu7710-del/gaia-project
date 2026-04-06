@@ -46,31 +46,58 @@ public class BuildingIncomeVo {
 
     /**
      * 교역소 수입 계산
-     * - 1번째 교역소: 3 크레딧
-     * - 2번째 교역소: 4 크레딧
-     * - 3번째 교역소: 4 크레딧
-     * - 4번째 교역소: 5 크레딧
+     * 일반: 1→3돈, 2→4돈, 3→4돈, 4→5돈
+     * 매안: 1개당 1지식
      */
-    public static ResourcesVo getTradingStationIncome(int stockTradingStation) {
+    public static ResourcesVo getTradingStationIncome(int stockTradingStation, boolean isBescods) {
         int placed = MAX_TRADING_STATION - stockTradingStation;
+        if (isBescods) {
+            return new ResourcesVo(0, 0, placed, 0, 0, 0, 0, 0, 0, null);
+        }
         int creditIncome = 0;
-
-        // 각 교역소별 수입 계산
         int[] incomePerSlot = {3, 4, 4, 5};
         for (int i = 0; i < placed && i < incomePerSlot.length; i++) {
             creditIncome += incomePerSlot[i];
         }
-
         return new ResourcesVo(creditIncome, 0, 0, 0, 0, 0, 0, 0, 0, null);
+    }
+
+    /** 하위 호환 (isBescods=false) */
+    public static ResourcesVo getTradingStationIncome(int stockTradingStation) {
+        return getTradingStationIncome(stockTradingStation, false);
     }
 
     /**
      * 연구소 수입 계산
-     * - 각 연구소당 1 지식
+     * 일반: 각 연구소당 1 지식
+     * 매안: 3돈, 4돈, 5돈
+     * 네블라: 각 연구소당 2 파워 순환
      */
-    public static ResourcesVo getResearchLabIncome(int stockResearchLab) {
+    public static ResourcesVo getResearchLabIncome(int stockResearchLab, boolean isBescods, boolean isNevlas) {
         int placed = MAX_RESEARCH_LAB - stockResearchLab;
+        if (isBescods) {
+            int creditIncome = 0;
+            int[] incomePerSlot = {3, 4, 5};
+            for (int i = 0; i < placed && i < incomePerSlot.length; i++) {
+                creditIncome += incomePerSlot[i];
+            }
+            return new ResourcesVo(creditIncome, 0, 0, 0, 0, 0, 0, 0, 0, null);
+        }
+        if (isNevlas) {
+            // 네블라: 지식 대신 파워 순환 2 per 연구소
+            return new ResourcesVo(0, 0, 0, 0, 0, 0, 0, placed * 2, 0, null);
+        }
         return new ResourcesVo(0, 0, placed, 0, 0, 0, 0, 0, 0, null);
+    }
+
+    /** 하위 호환 (isBescods=false, isNevlas=false) */
+    public static ResourcesVo getResearchLabIncome(int stockResearchLab, boolean isBescods) {
+        return getResearchLabIncome(stockResearchLab, isBescods, false);
+    }
+
+    /** 하위 호환 (isBescods=false) */
+    public static ResourcesVo getResearchLabIncome(int stockResearchLab) {
+        return getResearchLabIncome(stockResearchLab, false);
     }
 
     /**
@@ -109,11 +136,35 @@ public class BuildingIncomeVo {
             int knowledgeAcademyCount,
             boolean isItars
     ) {
+        return getTotalBuildingIncome(stockMine, stockTradingStation, stockResearchLab, stockPlanetaryInstitute, knowledgeAcademyCount, isItars, false);
+    }
+
+    public static ResourcesVo getTotalBuildingIncome(
+            int stockMine,
+            int stockTradingStation,
+            int stockResearchLab,
+            int stockPlanetaryInstitute,
+            int knowledgeAcademyCount,
+            boolean isItars,
+            boolean isBescods
+    ) {
+        return getTotalBuildingIncome(stockMine, stockTradingStation, stockResearchLab, stockPlanetaryInstitute, knowledgeAcademyCount, isItars, isBescods, false);
+    }
+
+    public static ResourcesVo getTotalBuildingIncome(
+            int stockMine,
+            int stockTradingStation,
+            int stockResearchLab,
+            int stockPlanetaryInstitute,
+            int knowledgeAcademyCount,
+            boolean isItars,
+            boolean isBescods,
+            boolean isNevlas
+    ) {
         ResourcesVo total = ResourcesVo.zero();
         total = total.add(getMineIncome(stockMine));
-        total = total.add(getTradingStationIncome(stockTradingStation));
-        total = total.add(getResearchLabIncome(stockResearchLab));
-        // PI 수입은 종족별로 다르므로 IncomeService에서 FactionType.getPiIncome()으로 처리
+        total = total.add(getTradingStationIncome(stockTradingStation, isBescods));
+        total = total.add(getResearchLabIncome(stockResearchLab, isBescods, isNevlas));
         total = total.add(getAcademyIncome(knowledgeAcademyCount, isItars));
         return total;
     }

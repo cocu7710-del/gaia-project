@@ -29,5 +29,20 @@ public enum ActionType {
     FLEET_SHIP_ACTION,
 
     /** 종족 고유 능력 액션 (파이락 다운그레이드 등) */
-    FACTION_ABILITY
+    FACTION_ABILITY,
+
+    /** 파워 수입 완료 마커 */
+    POWER_INCOME,
+
+    /** 부스터 액션 사용 */
+    BOOSTER_ACTION,
+
+    /** 연방 형성 */
+    FORM_FEDERATION,
+
+    /** 기술 타일 액션 사용 */
+    TECH_TILE_ACTION,
+
+    /** QIC 아카데미 액션 */
+    QIC_ACADEMY_ACTION
 }

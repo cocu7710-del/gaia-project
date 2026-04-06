@@ -56,22 +56,38 @@ public class TechController {
             ));
         }
 
-        // 2. 이번 라운드 ACTION 사용 완료 타일 코드
-        java.util.Set<String> actionUsedCodes = techTileService.getActionUsedTileCodes(roomId);
+        // 2. 이번 라운드 ACTION 사용 완료 (playerId:tileCode) Set
+        java.util.Set<String> actionUsedPlayerTiles = techTileService.getActionUsedPlayerTileCodes(roomId);
+        // tileCode → 사용한 playerIds 매핑
+        java.util.Map<String, List<String>> actionUsedByTile = new java.util.HashMap<>();
+        for (String key : actionUsedPlayerTiles) {
+            String[] parts = key.split(":", 2);
+            if (parts.length == 2) {
+                actionUsedByTile.computeIfAbsent(parts[1], k -> new ArrayList<>()).add(parts[0]);
+            }
+        }
 
         // 3. 기본 기술 타일 조회 + 소유자 목록
         List<GameTechOffer> techOffers = techTileService.getTechTiles(roomId);
         // GamePlayerTechTile에서 기본 타일 소유자 매핑 (tileCode → playerIds)
         var allPlayerTiles = playerTechTileRepository.findByGameId(roomId);
         java.util.Map<String, List<String>> ownersByTileCode = new java.util.HashMap<>();
+        // tileCode+playerId → coveredBy 매핑
+        java.util.Map<String, java.util.Map<String, String>> coveredByMap = new java.util.HashMap<>();
         for (var pt : allPlayerTiles) {
             ownersByTileCode.computeIfAbsent(pt.getTechTileCode(), k -> new ArrayList<>())
                     .add(pt.getPlayerId().toString());
+            if (Boolean.TRUE.equals(pt.getIsCovered()) && pt.getCoveredBy() != null) {
+                coveredByMap.computeIfAbsent(pt.getTechTileCode(), k -> new java.util.HashMap<>())
+                        .put(pt.getPlayerId().toString(), pt.getCoveredBy());
+            }
         }
         List<TechTileInfo> basicTiles = techOffers.stream()
                 .map(offer -> {
                     TechTileCode tileCode = offer.getTechTileCode();
                     List<String> owners = ownersByTileCode.getOrDefault(tileCode.name(), List.of());
+                    List<String> usedByPlayers = actionUsedByTile.getOrDefault(tileCode.name(), List.of());
+                    java.util.Map<String, String> coverMap = coveredByMap.getOrDefault(tileCode.name(), java.util.Map.of());
                     return new TechTileInfo(
                             tileCode.name(),
                             offer.getTechTrack(),
@@ -80,8 +96,10 @@ public class TechController {
                             tileCode.getAbility().getDescription(),
                             offer.getTakenByPlayerId() != null,
                             offer.getTakenByPlayerId() != null ? offer.getTakenByPlayerId().toString() : null,
-                            actionUsedCodes.contains(tileCode.name()),
-                            owners
+                            !usedByPlayers.isEmpty(),
+                            owners,
+                            usedByPlayers,
+                            coverMap
                     );
                 })
                 .toList();
@@ -91,6 +109,7 @@ public class TechController {
         List<AdvancedTechTileInfo> advancedTiles = advOffers.stream()
                 .map(offer -> {
                     AdvancedTechTileCode tileCode = offer.getAdvTechTileCode();
+                    List<String> usedByPlayers2 = actionUsedByTile.getOrDefault(tileCode.name(), List.of());
                     return new AdvancedTechTileInfo(
                             tileCode.name(),
                             offer.getTechTrack(),
@@ -99,7 +118,8 @@ public class TechController {
                             tileCode.getAbility().getDescription(),
                             offer.getTakenByPlayerId() != null,
                             offer.getTakenByPlayerId() != null ? offer.getTakenByPlayerId().toString() : null,
-                            actionUsedCodes.contains(tileCode.name())
+                            !usedByPlayers2.isEmpty(),
+                            usedByPlayers2
                     );
                 })
                 .toList();

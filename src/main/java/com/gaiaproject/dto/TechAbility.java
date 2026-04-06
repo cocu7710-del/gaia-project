@@ -48,7 +48,7 @@ public class TechAbility {
             playerState.addQic(qicIncome);
         }
         if (powerCharge != null) {
-            playerState.chargePower(powerCharge);
+            playerState.chargePowerWithFactionRules(powerCharge);
         }
         if (powerGain != null) {
             playerState.gainPower(powerGain);

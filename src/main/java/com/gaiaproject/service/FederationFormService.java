@@ -50,6 +50,8 @@ public class FederationFormService {
     private final GamePlayerTechTileRepository playerTechTileRepository;
     private final RoundScoringService roundScoringService;
     private final com.gaiaproject.repository.map.GameHexRepository hexRepository;
+    private final VpLogService vpLogService;
+    private final TechTileService techTileService;
 
     /**
      * 건물 선택 검증 (토큰 배치 전). 파워 합계 + 기존 연방 중복 체크 + 최소 토큰 수 반환.
@@ -77,6 +79,15 @@ public class FederationFormService {
             GameBuilding b = myBuildingMap.get(key);
             if (b == null) return Map.of("success", false, "message", "내 건물이 아닙니다: (" + hex[0] + "," + hex[1] + ")");
             totalPower += buildingPowerValue(b.getBuildingType(), gameId, playerId, b.isHasRing());
+        }
+        // 매안 PI: 본인 행성(TITANIUM) 건물 파워값 +1
+        if (ps.getFactionType() == FactionType.BESCODS && ps.getStockPlanetaryInstitute() == 0) {
+            for (int[] hex : buildingHexes) {
+                var hexOpt = hexRepository.findByGameIdAndHexQAndHexR(gameId, hex[0], hex[1]);
+                if (hexOpt.isPresent() && hexOpt.get().getPlanetType() == com.gaiaproject.domain.enumtype.player.PlanetType.TITANIUM) {
+                    totalPower += 1;
+                }
+            }
         }
 
         // 기존 연방 중복 체크 (하이브 제외)
@@ -118,20 +129,37 @@ public class FederationFormService {
         // 최소 토큰 수 계산: BFS 실제 경로 (장애물 우회)
         Set<String> buildingSet = new HashSet<>();
         for (int[] h : buildingHexes) buildingSet.add(h[0] + "," + h[1]);
+        // 하이브: 기존 연방 건물/토큰도 연결된 노드로 포함
+        if (isIvits) {
+            List<GameFederationGroup> existingGroups = federationGroupRepository.findByGameIdAndPlayerId(gameId, playerId);
+            if (!existingGroups.isEmpty()) {
+                for (GameFederationBuilding fb : federationBuildingRepository.findByFederationGroupId(existingGroups.get(0).getId())) {
+                    buildingSet.add(fb.getHexQ() + "," + fb.getHexR());
+                }
+                for (var ft : federationTokenHexRepository.findByFederationGroupId(existingGroups.get(0).getId())) {
+                    buildingSet.add(ft.getHexQ() + "," + ft.getHexR());
+                }
+            }
+        }
         int groups = countConnectedGroups(buildingSet);
 
         // 토큰 배치 가능 헥스 (EMPTY + 맵 존재 + 연방 인접 아님)
         Set<String> allowedHexes = buildAllowedHexes(gameId, playerId, isIvits);
-        log.info("[FEDERATION_VALIDATE] allowedHexes count={}, buildings={}", allowedHexes.size(), buildingHexes.size());
-        int minTokens = calcMinTokensToConnect(buildingHexes, gameId, allowedHexes, buildingSet);
+        // 하이브: 전체 buildingSet 좌표를 buildingHexes로 사용
+        List<int[]> effectiveBuildingHexes = isIvits
+                ? buildingSet.stream().map(s -> { String[] p = s.split(","); return new int[]{Integer.parseInt(p[0]), Integer.parseInt(p[1])}; }).toList()
+                : buildingHexes;
+        log.info("[FEDERATION_VALIDATE] allowedHexes count={}, buildings={}", allowedHexes.size(), effectiveBuildingHexes.size());
+        int minTokens = calcMinTokensToConnect(effectiveBuildingHexes, gameId, allowedHexes, buildingSet);
         log.info("[FEDERATION_VALIDATE] minTokens={}", minTokens);
 
         return Map.of("success", true, "totalPower", totalPower, "minTokens", minTokens, "groups", groups);
     }
 
     /**
-     * 선택한 건물들을 모두 연결하는 최소 토큰 수 계산 (Prim MST + BFS 실제 경로)
-     * 장애물(행성, 기존 연방 헥스, 인접 금지) 우회하여 실제 빈 헥스 경로로 계산
+     * 선택한 건물들을 모두 연결하는 최소 토큰 수 계산 (Steiner Tree 근사)
+     * 모든 연결 순서를 시도하여 경로 공유를 반영한 실제 최소 토큰 수를 반환.
+     * 기존 MST 방식은 경로 겹침을 고려하지 못해 과다 계산되는 버그가 있었음.
      */
     private int calcMinTokensToConnect(List<int[]> buildingHexes) {
         return calcMinTokensToConnect(buildingHexes, null, Set.of(), Set.of());
@@ -141,59 +169,200 @@ public class FederationFormService {
                                          Set<String> allowedHexes, Set<String> buildingHexSet) {
         if (buildingHexes.size() <= 1) return 0;
 
-        int n = buildingHexes.size();
-        // BFS로 실제 경로 거리 계산 (장애물 우회)
-        int[][] dist = new int[n][n];
-        for (int i = 0; i < n; i++) {
-            for (int j = i + 1; j < n; j++) {
-                int d = bfsDistance(buildingHexes.get(i), buildingHexes.get(j), allowedHexes, buildingHexSet);
-                dist[i][j] = d;
-                dist[j][i] = d;
+        int[][] dirs = {{1,0},{-1,0},{0,1},{0,-1},{1,-1},{-1,1}};
+
+        // 1. 인접 건물끼리 묶어 연결 그룹 찾기
+        List<Set<String>> groups = new ArrayList<>();
+        Set<String> assigned = new HashSet<>();
+        for (int[] h : buildingHexes) {
+            String key = h[0] + "," + h[1];
+            if (assigned.contains(key)) continue;
+            Set<String> group = new HashSet<>();
+            Queue<String> q = new LinkedList<>();
+            q.add(key);
+            assigned.add(key);
+            group.add(key);
+            while (!q.isEmpty()) {
+                String cur = q.poll();
+                String[] parts = cur.split(",");
+                int cq = Integer.parseInt(parts[0]);
+                int cr = Integer.parseInt(parts[1]);
+                for (int[] d : dirs) {
+                    String nb = (cq + d[0]) + "," + (cr + d[1]);
+                    if (!assigned.contains(nb) && buildingHexSet.contains(nb)) {
+                        assigned.add(nb);
+                        group.add(nb);
+                        q.add(nb);
+                    }
+                }
             }
+            groups.add(group);
         }
 
-        // Prim MST: 최소 신장 트리의 엣지 가중치 합
-        boolean[] inMST = new boolean[n];
-        int[] minDist = new int[n];
-        java.util.Arrays.fill(minDist, Integer.MAX_VALUE);
-        minDist[0] = 0;
-        int totalTokens = 0;
+        int n = groups.size();
+        if (n <= 1) return 0;
 
-        for (int count = 0; count < n; count++) {
-            int u = -1;
-            for (int i = 0; i < n; i++) {
-                if (!inMST[i] && (u == -1 || minDist[i] < minDist[u])) u = i;
+        // 2. 모든 연결 순서 시도 (그룹 0 고정, 나머지 순열) → 최소 토큰 수
+        int[] indices = new int[n - 1];
+        for (int i = 0; i < n - 1; i++) indices[i] = i + 1;
+
+        int minTokens = Integer.MAX_VALUE;
+        do {
+            int tokens = simulateSteinerConnection(groups, indices, allowedHexes, buildingHexSet);
+            minTokens = Math.min(minTokens, tokens);
+        } while (nextPermutation(indices));
+
+        log.info("[FEDERATION] Steiner minTokens={}, groups={}", minTokens, n);
+        return minTokens;
+    }
+
+    /**
+     * 주어진 연결 순서(order)로 그룹을 하나씩 연결하며 실제 사용한 고유 토큰 헥스 수 반환.
+     * 이전에 배치한 토큰을 후속 경로에서 재활용하므로 공유 경로가 자연스럽게 반영됨.
+     */
+    private int simulateSteinerConnection(List<Set<String>> groups, int[] order,
+                                            Set<String> allowedHexes, Set<String> buildingHexSet) {
+        int[][] dirs = {{1,0},{-1,0},{0,1},{0,-1},{1,-1},{-1,1}};
+        Set<String> connected = new HashSet<>(groups.get(0));
+        Set<String> placedTokens = new HashSet<>();
+        Set<Integer> connectedGroupIds = new HashSet<>();
+        connectedGroupIds.add(0);
+
+        for (int idx : order) {
+            if (connectedGroupIds.contains(idx)) continue;
+
+            // 0-1 BFS: connected + placedTokens → target group
+            List<String> path = bfsSteinerPath(connected, placedTokens, groups.get(idx),
+                    allowedHexes, buildingHexSet, dirs);
+            if (path == null) return Integer.MAX_VALUE;
+
+            // 경로 상의 EMPTY 헥스를 토큰으로 배치 (건물 헥스는 제외)
+            for (String hex : path) {
+                if (allowedHexes.contains(hex) && !connected.contains(hex) && !buildingHexSet.contains(hex)) {
+                    placedTokens.add(hex);
+                }
             }
-            inMST[u] = true;
-            totalTokens += minDist[u]; // BFS가 이미 토큰 수를 반환
 
-            // 인접 노드 업데이트
-            for (int v = 0; v < n; v++) {
-                if (!inMST[v] && dist[u][v] < minDist[v]) {
-                    minDist[v] = dist[u][v];
+            // 도달한 그룹 + 경로 상 건물 그룹 모두 connected에 추가
+            connected.addAll(groups.get(idx));
+            connectedGroupIds.add(idx);
+            for (String hex : path) {
+                if (buildingHexSet.contains(hex)) {
+                    for (int g = 0; g < groups.size(); g++) {
+                        if (!connectedGroupIds.contains(g) && groups.get(g).contains(hex)) {
+                            connectedGroupIds.add(g);
+                            connected.addAll(groups.get(g));
+                        }
+                    }
                 }
             }
         }
 
-        return totalTokens;
+        return placedTokens.size();
     }
 
     /**
-     * 토큰 배치 가능 헥스 구성 (EMPTY + 맵에 존재 + 기존 연방 인접 아님)
+     * 0-1 BFS: connected + placedTokens에서 targetGroup까지의 최단 경로 반환.
+     * 건물 헥스(비용 0)와 EMPTY 토큰 헥스(비용 1)를 구분하여 최소 토큰 경로를 찾음.
+     */
+    private List<String> bfsSteinerPath(Set<String> connected, Set<String> placedTokens,
+                                          Set<String> targetGroup, Set<String> allowedHexes,
+                                          Set<String> buildingHexSet, int[][] dirs) {
+        Map<String, String> parent = new HashMap<>();
+        Map<String, Integer> dist = new HashMap<>();
+        Deque<String> deque = new ArrayDeque<>();
+
+        for (String hex : connected) {
+            dist.put(hex, 0);
+            deque.addFirst(hex);
+        }
+        for (String hex : placedTokens) {
+            if (!dist.containsKey(hex)) {
+                dist.put(hex, 0);
+                deque.addFirst(hex);
+            }
+        }
+
+        while (!deque.isEmpty()) {
+            String cur = deque.pollFirst();
+            int curDist = dist.get(cur);
+            String[] parts = cur.split(",");
+            int q = Integer.parseInt(parts[0]);
+            int r = Integer.parseInt(parts[1]);
+
+            for (int[] d : dirs) {
+                String nb = (q + d[0]) + "," + (r + d[1]);
+
+                // 타겟 그룹 도착 → 경로 역추적
+                if (targetGroup.contains(nb)) {
+                    parent.put(nb, cur);
+                    List<String> path = new ArrayList<>();
+                    String trace = nb;
+                    while (trace != null && !connected.contains(trace) && !placedTokens.contains(trace)) {
+                        path.add(trace);
+                        trace = parent.get(trace);
+                    }
+                    return path;
+                }
+
+                int newDist;
+                boolean zeroCost;
+                if (connected.contains(nb) || placedTokens.contains(nb) || buildingHexSet.contains(nb)) {
+                    newDist = curDist;
+                    zeroCost = true;
+                } else if (allowedHexes.contains(nb)) {
+                    newDist = curDist + 1;
+                    zeroCost = false;
+                } else {
+                    continue;
+                }
+
+                if (dist.containsKey(nb) && dist.get(nb) <= newDist) continue;
+                dist.put(nb, newDist);
+                parent.put(nb, cur);
+                if (zeroCost) deque.addFirst(nb); else deque.addLast(nb);
+            }
+        }
+
+        return null;
+    }
+
+    /** 다음 사전순 순열 생성 (in-place). 마지막 순열이면 false 반환 */
+    private boolean nextPermutation(int[] arr) {
+        int i = arr.length - 2;
+        while (i >= 0 && arr[i] >= arr[i + 1]) i--;
+        if (i < 0) return false;
+        int j = arr.length - 1;
+        while (arr[j] <= arr[i]) j--;
+        int tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+        for (int left = i + 1, right = arr.length - 1; left < right; left++, right--) {
+            tmp = arr[left]; arr[left] = arr[right]; arr[right] = tmp;
+        }
+        return true;
+    }
+
+    /**
+     * 토큰 배치 가능 헥스 구성 (EMPTY + 맵에 존재 + 자기 기존 연방 인접 아님)
      */
     private Set<String> buildAllowedHexes(UUID gameId, UUID playerId, boolean isIvits) {
         Set<String> allowed = new HashSet<>();
         int[][] dirs = {{1,0},{-1,0},{0,1},{0,-1},{1,-1},{-1,1}};
 
-        // 맵에 존재하는 EMPTY 헥스만 허용
+        // 맵에 존재하는 EMPTY 헥스 허용 (함대 헥스 제외)
         List<GameHex> allHexes = hexRepository.findByGameId(gameId);
         for (GameHex hex : allHexes) {
-            if ("EMPTY".equals(hex.getPlanetType().name())) {
+            if ("EMPTY".equals(hex.getPlanetType().name())
+                    && (hex.getSectorId() == null || !hex.getSectorId().startsWith("FORGOTTEN_FLEET_"))) {
                 allowed.add(hex.getHexQ() + "," + hex.getHexR());
             }
         }
+        // 내 건물이 있는 헥스도 경유 가능 (선택하지 않은 건물 포함)
+        List<GameBuilding> myBuildings = buildingRepository.findByGameIdAndPlayerId(gameId, playerId);
+        for (GameBuilding b : myBuildings) {
+            allowed.add(b.getHexQ() + "," + b.getHexR());
+        }
 
-        // 기존 연방 헥스 + 인접 제거 (하이브 제외)
+        // 자기 기존 연방 헥스 + 인접에는 토큰 배치/경유 불가 (하이브 제외)
         if (!isIvits) {
             Set<String> fedHexes = getUsedFederationHexes(gameId, playerId);
             allowed.removeAll(fedHexes);
@@ -205,65 +374,16 @@ public class FederationFormService {
                     allowed.remove((q + d[0]) + "," + (r + d[1]));
                 }
             }
-        }
-
-        return allowed;
-    }
-
-    /**
-     * BFS로 두 건물 간 실제 최단 토큰 수 계산
-     * 토큰 배치 가능 조건: EMPTY 헥스만 (행성/소행성/초월행성 불가), 기존 연방 헥스 및 인접 불가
-     * 건물 헥스는 통과 가능 (연결 대상이므로)
-     */
-    private int bfsDistance(int[] from, int[] to, Set<String> allowedHexes, Set<String> buildingHexSet) {
-        String startKey = from[0] + "," + from[1];
-        String endKey = to[0] + "," + to[1];
-        if (startKey.equals(endKey)) return 0;
-
-        // 인접하면 토큰 0
-        int directDist = com.gaiaproject.util.HexUtil.distance(from[0], from[1], to[0], to[1]);
-        if (directDist == 1) return 0;
-
-        // BFS
-        int[][] dirs = {{1,0},{-1,0},{0,1},{0,-1},{1,-1},{-1,1}};
-        Map<String, Integer> visited = new HashMap<>();
-        Queue<String> queue = new LinkedList<>();
-        queue.add(startKey);
-        visited.put(startKey, 0);
-
-        while (!queue.isEmpty()) {
-            String current = queue.poll();
-            int currentDist = visited.get(current);
-            String[] parts = current.split(",");
-            int q = Integer.parseInt(parts[0]);
-            int r = Integer.parseInt(parts[1]);
-
-            for (int[] d : dirs) {
-                String neighbor = (q + d[0]) + "," + (r + d[1]);
-                if (visited.containsKey(neighbor)) continue;
-
-                // 도착지면 완료
-                if (neighbor.equals(endKey)) {
-                    // 현재 위치가 allowed(토큰 헥스)면 +1(현재 위치 토큰) 아님 — currentDist는 이미 현재까지 토큰 수
-                    log.info("[BFS] {} → {}: found at dist={}, via {}", startKey, endKey, currentDist, current);
-                    return currentDist;
+            // 기존 연방에 사용되지 않은 내 건물만 경유 가능
+            for (GameBuilding b : myBuildings) {
+                String key = b.getHexQ() + "," + b.getHexR();
+                if (!fedHexes.contains(key)) {
+                    allowed.add(key);
                 }
-
-                // 건물 헥스면 통과 가능 (토큰 안 놓지만 연결 경로)
-                if (buildingHexSet.contains(neighbor)) {
-                    visited.put(neighbor, currentDist);
-                    queue.add(neighbor);
-                    continue;
-                }
-
-                // 허용된 헥스만 통과 가능 (EMPTY + 맵 존재 + 연방 인접 아님)
-                if (!allowedHexes.contains(neighbor)) continue;
-                visited.put(neighbor, currentDist + 1);
-                queue.add(neighbor);
             }
         }
 
-        return Integer.MAX_VALUE; // 연결 불가
+        return allowed;
     }
 
     /** BFS로 연결된 그룹 수 계산 */
@@ -314,10 +434,18 @@ public class FederationFormService {
         // 이미 연방된 헥스 (일반 종족: 제외, 하이브: 포함 가능)
         Set<String> usedFedHexes = isIvits ? Set.of() : getUsedFederationHexes(gameId, playerId);
 
-        // 토큰이 이미 연방된 위치에 있는지 체크
+        // 토큰이 이미 연방된 위치 또는 연방 인접에 있는지 체크
+        int[][] adjDirs = {{1,0},{-1,0},{0,1},{0,-1},{1,-1},{-1,1}};
+        Set<String> fedBlockedHexes = new HashSet<>(usedFedHexes);
+        for (String fedHex : usedFedHexes) {
+            String[] parts = fedHex.split(",");
+            int fq = Integer.parseInt(parts[0]);
+            int fr = Integer.parseInt(parts[1]);
+            for (int[] d : adjDirs) fedBlockedHexes.add((fq + d[0]) + "," + (fr + d[1]));
+        }
         for (int[] hex : tokenHexes) {
-            if (usedFedHexes.contains(hex[0] + "," + hex[1])) {
-                return FormFederationResponse.fail(gameId, "이미 연방에 사용된 위치에 토큰을 놓았습니다");
+            if (fedBlockedHexes.contains(hex[0] + "," + hex[1])) {
+                return FormFederationResponse.fail(gameId, "기존 연방 또는 인접 위치에 토큰을 놓을 수 없습니다");
             }
         }
 
@@ -354,8 +482,17 @@ public class FederationFormService {
             return FormFederationResponse.fail(gameId, "건물과 토큰이 연결되어 있지 않습니다");
         }
 
-        // 파워 값 (BASIC_TILE_9 반영)
+        // 파워 값 (BASIC_TILE_9 반���)
         int totalPowerValue = selectedBuildings.stream().mapToInt(b -> buildingPowerValue(b.getBuildingType(), gameId, playerId, b.isHasRing())).sum();
+        // 매안 PI: 본인 행성(TITANIUM) 건물 파워값 +1
+        if (ps.getFactionType() == FactionType.BESCODS && ps.getStockPlanetaryInstitute() == 0) {
+            for (GameBuilding b : selectedBuildings) {
+                var hexOpt = hexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR());
+                if (hexOpt.isPresent() && hexOpt.get().getPlanetType() == com.gaiaproject.domain.enumtype.player.PlanetType.TITANIUM) {
+                    totalPowerValue += 1;
+                }
+            }
+        }
 
         // 제노스 PI: 연방 필요 파워 6
         boolean isXenosPi = ps.getFactionType() == FactionType.XENOS && ps.getStockPlanetaryInstitute() == 0;
@@ -384,7 +521,7 @@ public class FederationFormService {
         }
 
         // 최소 토큰
-        if (!tokenHexes.isEmpty() && canFormWithFewerTokens(selectedBuildings, tokenHexes, buildingHexes)) {
+        if (!tokenHexes.isEmpty() && canFormWithFewerTokens(selectedBuildings, tokenHexes, buildingHexes, gameId, playerId, isIvits)) {
             return FormFederationResponse.fail(gameId, "최소 토큰 수보다 많은 토큰을 사용했습니다");
         }
 
@@ -412,11 +549,19 @@ public class FederationFormService {
         Map<String, GameBuilding> myBuildingMap = myBuildings.stream()
                 .collect(Collectors.toMap(b -> b.getHexQ() + "," + b.getHexR(), b -> b, (a, c) -> a));
 
-        // 이미 연방된 헥스 제외 (하이브는 제외 없음)
+        // 이미 연방된 헥스 + 인접 제외 (하이브는 제외 없음)
         Set<String> usedFedHexes = isIvits ? Set.of() : getUsedFederationHexes(gameId, playerId);
+        Set<String> fedBlockedForTokens = new HashSet<>(usedFedHexes);
+        if (!isIvits) {
+            int[][] adjDirs2 = {{1,0},{-1,0},{0,1},{0,-1},{1,-1},{-1,1}};
+            for (String fh : usedFedHexes) {
+                String[] p = fh.split(","); int fq = Integer.parseInt(p[0]); int fr = Integer.parseInt(p[1]);
+                for (int[] d : adjDirs2) fedBlockedForTokens.add((fq + d[0]) + "," + (fr + d[1]));
+            }
+        }
 
         for (int[] hex : tokenHexes) {
-            if (usedFedHexes.contains(hex[0] + "," + hex[1])) {
+            if (fedBlockedForTokens.contains(hex[0] + "," + hex[1])) {
                 return FormFederationResponse.fail(gameId, "이미 연방에 사용된 위치에 토큰을 놓았습니다");
             }
         }
@@ -448,7 +593,7 @@ public class FederationFormService {
 
         // 2. 하이브: 기존 연방과 합치는 "확장" 로직 / 일반: 이미 사용된 건물 불가
         if (isIvits) {
-            return formFederationIvits(gameId, playerId, ps, game, selectedBuildings, buildingHexes, tokenHexes, request.federationTileCode());
+            return formFederationIvits(gameId, playerId, ps, game, selectedBuildings, buildingHexes, tokenHexes, request.federationTileCode(), request.techTileCode(), request.techTrackCode(), request.coveredTileCode());
         }
 
         // ── 일반 종족 ──
@@ -498,8 +643,8 @@ public class FederationFormService {
             return FormFederationResponse.fail(gameId, "파워 값이 " + fedReq + " 미만입니다 (현재: " + totalPowerValue + ")");
         }
 
-        // 6. 최소 토큰 사용 검증
-        if (tokenCount > 0 && canFormWithFewerTokens(selectedBuildings, tokenHexes, buildingHexes)) {
+        // 6. 최소 토큰 초과 검증 (최소보다 많이 사용하면 실패)
+        if (tokenCount > 0 && canFormWithFewerTokens(selectedBuildings, tokenHexes, buildingHexes, gameId, playerId, isIvits)) {
             return FormFederationResponse.fail(gameId, "최소 토큰 수보다 많은 토큰을 사용했습니다");
         }
 
@@ -513,6 +658,11 @@ public class FederationFormService {
 
         GameFederationGroup group = federationGroupRepository.save(GameFederationGroup.builder()
                 .gameId(gameId).playerId(playerId).federationTileCode(tileType.name()).build());
+        // 비활성 연방토큰(useFederation=false)은 획득 즉시 used 처리
+        if (!tileType.isUseFederation()) {
+            group.markUsed();
+            federationGroupRepository.save(group);
+        }
         for (int[] h : buildingHexes) federationBuildingRepository.save(GameFederationBuilding.builder().federationGroupId(group.getId()).hexQ(h[0]).hexR(h[1]).build());
         for (int[] h : tokenHexes) federationTokenHexRepository.save(GameFederationTokenHex.builder().federationGroupId(group.getId()).hexQ(h[0]).hexR(h[1]).build());
 
@@ -520,6 +670,9 @@ public class FederationFormService {
         playerFederationTokenRepository.save(GamePlayerFederationToken.builder().gameId(gameId).playerId(playerId).federationTileType(tileType).build());
 
         ps.applyIncome(tileType.getImmediateReward());
+        if (tileType.getImmediateReward().vp() > 0) {
+            vpLogService.logVp(gameId, playerId, com.gaiaproject.domain.enumtype.action.VpCategory.FEDERATION_TOKEN, tileType.getImmediateReward().vp(), null, "연방 토큰: " + tileType.name());
+        }
         ps.incrementFederationCount();
         // 라운드 점수: 연방 형성
         if (game.getCurrentRound() != null) {
@@ -530,11 +683,24 @@ public class FederationFormService {
 
         log.info("[FEDERATION] 일반 연방 #{}: game={}, player={}, tile={}, buildings={}, tokens={}", ps.getFederationCount(), gameId, playerId, tileType, buildingHexes.size(), tokenCount);
 
+        // 기술 타일 획득 (연방 토큰 → 고급 기술 타일 가능)
+        if (request.techTileCode() != null && !request.techTileCode().isEmpty()) {
+            techTileService.acquireTileForBuilding(gameId, playerId, request.techTileCode(), request.techTrackCode(), game.getEconomyTrackOption(), request.coveredTileCode());
+        }
+
         // 특수 액션 타일이면 턴을 넘기지 않고 후속 액션 브로드캐스트
-        if (tileType.hasSpecialAction() && tileType.getSpecialAction() == FederationActionType.TERRAFORM_3_PLACE_MINE) {
-            actionService.saveActionOnly(gameId, playerId, ActionType.FACTION_ABILITY, "{\"type\":\"FEDERATION\",\"tileCode\":\"" + tileType.name() + "\"}");
-            webSocketService.broadcastDeferredActionRequired(gameId, playerId, "PLACE_MINE_TERRAFORM_3", "{\"terraformDiscount\":3}");
-            return FormFederationResponse.success(gameId, tileType.name(), null);
+        if (tileType.hasSpecialAction()) {
+            var specialAction = tileType.getSpecialAction();
+            if (specialAction == FederationActionType.TERRAFORM_3_PLACE_MINE) {
+                actionService.saveActionOnly(gameId, playerId, ActionType.FACTION_ABILITY, "{\"type\":\"FEDERATION\",\"tileCode\":\"" + tileType.name() + "\"}");
+                webSocketService.broadcastDeferredActionRequired(gameId, playerId, "PLACE_MINE_TERRAFORM_3", "{\"terraformDiscount\":3}");
+                return FormFederationResponse.success(gameId, tileType.name(), null);
+            }
+            if (specialAction == FederationActionType.PLACE_MINE_NO_RANGE_LIMIT) {
+                actionService.saveActionOnly(gameId, playerId, ActionType.FACTION_ABILITY, "{\"type\":\"FEDERATION\",\"tileCode\":\"" + tileType.name() + "\"}");
+                webSocketService.broadcastDeferredActionRequired(gameId, playerId, "PLACE_MINE_NO_RANGE", "{\"noRangeLimit\":true}");
+                return FormFederationResponse.success(gameId, tileType.name(), null);
+            }
         }
 
         ConfirmActionResponse result = actionService.saveActionAndNextTurn(gameId, playerId, ActionType.FACTION_ABILITY, "{\"type\":\"FEDERATION\",\"tileCode\":\"" + tileType.name() + "\"}");
@@ -546,7 +712,8 @@ public class FederationFormService {
      */
     private FormFederationResponse formFederationIvits(UUID gameId, UUID playerId, GamePlayerState ps, Game game,
                                                         List<GameBuilding> selectedBuildings, List<int[]> buildingHexes,
-                                                        List<int[]> tokenHexes, String tileCode) {
+                                                        List<int[]> tokenHexes, String tileCode,
+                                                        String techTileCode, String techTrackCode, String coveredTileCode) {
         int tokenCount = tokenHexes.size();
 
         // QIC 검증 (파워 토큰 대신 QIC 사용)
@@ -608,8 +775,8 @@ public class FederationFormService {
         try { tileType = FederationTileType.valueOf(tileCode); }
         catch (Exception e) { return FormFederationResponse.fail(gameId, "알 수 없는 연방 타일"); }
 
-        // 최소 토큰 검증
-        if (tokenCount > 0 && canFormWithFewerTokens(selectedBuildings, tokenHexes, buildingHexes)) {
+        // 최소 QIC 초과 검증
+        if (tokenCount > 0 && canFormWithFewerTokens(selectedBuildings, tokenHexes, buildingHexes, gameId, playerId, true)) {
             return FormFederationResponse.fail(gameId, "최소 QIC 수보다 많은 QIC를 사용했습니다");
         }
 
@@ -623,6 +790,11 @@ public class FederationFormService {
         } else {
             group = federationGroupRepository.save(GameFederationGroup.builder()
                     .gameId(gameId).playerId(playerId).federationTileCode(tileType.name()).build());
+            // 비활성 연방토큰(useFederation=false)은 획득 즉시 used 처리
+            if (!tileType.isUseFederation()) {
+                group.markUsed();
+                federationGroupRepository.save(group);
+            }
         }
 
         // 건물/토큰 추가
@@ -634,6 +806,9 @@ public class FederationFormService {
         playerFederationTokenRepository.save(GamePlayerFederationToken.builder().gameId(gameId).playerId(playerId).federationTileType(tileType).build());
 
         ps.applyIncome(tileType.getImmediateReward());
+        if (tileType.getImmediateReward().vp() > 0) {
+            vpLogService.logVp(gameId, playerId, com.gaiaproject.domain.enumtype.action.VpCategory.FEDERATION_TOKEN, tileType.getImmediateReward().vp(), null, "연방 토큰: " + tileType.name());
+        }
         ps.incrementFederationCount();
         // 라운드 점수: 연방 형성
         if (game.getCurrentRound() != null) {
@@ -645,11 +820,24 @@ public class FederationFormService {
         log.info("[FEDERATION-IVITS] 연방 #{}: game={}, player={}, tile={}, newBuildings={}, qicTokens={}, totalPower={}",
                 ps.getFederationCount(), gameId, playerId, tileType, buildingHexes.size(), tokenCount, totalPowerValue);
 
+        // 기술 타일 획득
+        if (techTileCode != null && !techTileCode.isEmpty()) {
+            techTileService.acquireTileForBuilding(gameId, playerId, techTileCode, techTrackCode, game.getEconomyTrackOption(), coveredTileCode);
+        }
+
         // 특수 액션 타일이면 턴을 넘기지 않고 후속 액션 브로드캐스트
-        if (tileType.hasSpecialAction() && tileType.getSpecialAction() == FederationActionType.TERRAFORM_3_PLACE_MINE) {
-            actionService.saveActionOnly(gameId, playerId, ActionType.FACTION_ABILITY, "{\"type\":\"FEDERATION_IVITS\",\"tileCode\":\"" + tileType.name() + "\"}");
-            webSocketService.broadcastDeferredActionRequired(gameId, playerId, "PLACE_MINE_TERRAFORM_3", "{\"terraformDiscount\":3}");
-            return FormFederationResponse.success(gameId, tileType.name(), null);
+        if (tileType.hasSpecialAction()) {
+            var specialAction2 = tileType.getSpecialAction();
+            if (specialAction2 == FederationActionType.TERRAFORM_3_PLACE_MINE) {
+                actionService.saveActionOnly(gameId, playerId, ActionType.FACTION_ABILITY, "{\"type\":\"FEDERATION_IVITS\",\"tileCode\":\"" + tileType.name() + "\"}");
+                webSocketService.broadcastDeferredActionRequired(gameId, playerId, "PLACE_MINE_TERRAFORM_3", "{\"terraformDiscount\":3}");
+                return FormFederationResponse.success(gameId, tileType.name(), null);
+            }
+            if (specialAction2 == FederationActionType.PLACE_MINE_NO_RANGE_LIMIT) {
+                actionService.saveActionOnly(gameId, playerId, ActionType.FACTION_ABILITY, "{\"type\":\"FEDERATION_IVITS\",\"tileCode\":\"" + tileType.name() + "\"}");
+                webSocketService.broadcastDeferredActionRequired(gameId, playerId, "PLACE_MINE_NO_RANGE", "{\"noRangeLimit\":true}");
+                return FormFederationResponse.success(gameId, tileType.name(), null);
+            }
         }
 
         ConfirmActionResponse result = actionService.saveActionAndNextTurn(gameId, playerId, ActionType.FACTION_ABILITY, "{\"type\":\"FEDERATION_IVITS\",\"tileCode\":\"" + tileType.name() + "\"}");
@@ -657,6 +845,17 @@ public class FederationFormService {
     }
 
     /** 플레이어의 이미 사용된 연방 헥스 (건물 + 토큰) 조회 */
+    /** 기존 연방 토큰 헥스만 반환 (건물 제외) */
+    private Set<String> getUsedFederationTokenHexes(UUID gameId, UUID playerId) {
+        List<GameFederationGroup> groups = federationGroupRepository.findByGameIdAndPlayerId(gameId, playerId);
+        if (groups.isEmpty()) return Set.of();
+        List<UUID> groupIds = groups.stream().map(GameFederationGroup::getId).toList();
+        Set<String> used = new HashSet<>();
+        federationTokenHexRepository.findByFederationGroupIdIn(groupIds)
+                .forEach(t -> used.add(t.getHexQ() + "," + t.getHexR()));
+        return used;
+    }
+
     private Set<String> getUsedFederationHexes(UUID gameId, UUID playerId) {
         List<GameFederationGroup> groups = federationGroupRepository.findByGameIdAndPlayerId(gameId, playerId);
         if (groups.isEmpty()) return Set.of();
@@ -701,9 +900,13 @@ public class FederationFormService {
     }
 
     /** 사용된 토큰 수가 최소보다 많은지 검증 */
-    private boolean canFormWithFewerTokens(List<GameBuilding> buildings, List<int[]> tokenHexes, List<int[]> buildingHexes) {
+    private boolean canFormWithFewerTokens(List<GameBuilding> buildings, List<int[]> tokenHexes, List<int[]> buildingHexes,
+                                            UUID gameId, UUID playerId, boolean isIvits) {
         if (tokenHexes == null || tokenHexes.isEmpty()) return false;
-        int minTokens = calcMinTokensToConnect(buildingHexes);
+        Set<String> buildingSet = new HashSet<>();
+        for (int[] h : buildingHexes) buildingSet.add(h[0] + "," + h[1]);
+        Set<String> allowedHexes = buildAllowedHexes(gameId, playerId, isIvits);
+        int minTokens = calcMinTokensToConnect(buildingHexes, gameId, allowedHexes, buildingSet);
         return tokenHexes.size() > minTokens;
     }
 
@@ -759,15 +962,20 @@ public class FederationFormService {
             result.add(new FederationGroupInfo(g.getPlayerId().toString(), g.getFederationTileCode(), bHexes, tHexes, g.isUsed()));
         }
 
-        // 2. 플레이어 직접 보유 토큰 (글린 PI 등 — 연방 그룹에 속하지 않는 토큰)
+        // 2. 플레이어 직접 보유 토큰 (글린 PI, 하이브 중복 토큰 등)
+        // 연방 그룹에 이미 포함된 개수보다 보유 토큰이 더 많으면 추가
         var allPlayerTokens = playerFederationTokenRepository.findByGameId(gameId);
         for (var token : allPlayerTokens) {
             String tileCode = token.getFederationTileType().name();
-            boolean alreadyInGroup = result.stream().anyMatch(
-                    r -> r.playerId().equals(token.getPlayerId().toString()) && r.tileCode().equals(tileCode)
-            );
-            if (!alreadyInGroup) {
-                result.add(new FederationGroupInfo(token.getPlayerId().toString(), tileCode, List.of(), List.of(), token.isUsed()));
+            String pid = token.getPlayerId().toString();
+            long countInResult = result.stream().filter(
+                    r -> r.playerId().equals(pid) && r.tileCode().equals(tileCode)
+            ).count();
+            long countInTokens = allPlayerTokens.stream().filter(
+                    t -> t.getPlayerId().toString().equals(pid) && t.getFederationTileType().name().equals(tileCode)
+            ).count();
+            if (countInResult < countInTokens) {
+                result.add(new FederationGroupInfo(pid, tileCode, List.of(), List.of(), token.isUsed()));
             }
         }
 

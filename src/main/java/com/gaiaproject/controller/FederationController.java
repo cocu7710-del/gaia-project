@@ -55,7 +55,7 @@ public class FederationController {
             if (offer.getPosition() == null) {
                 generalSupply.add(info);
             } else if (offer.getPosition() == 0) {
-                terraformingTrackTile = info;
+                terraformingTrackTile = offer.getQuantity() > 0 ? info : null;
             } else {
                 forgottenFleet.add(info);
             }

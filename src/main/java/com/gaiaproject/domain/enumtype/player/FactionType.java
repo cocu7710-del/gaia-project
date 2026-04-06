@@ -49,7 +49,7 @@ public enum FactionType {
             new ResourcesVo(15, 6, 3, 1, 2, 4, 0, 0, 10, null),
             new TechTracksVo(1, 0, 0, 0, 0, 0)),  // 테라포밍 1
     BAL_TAKS("Bal T'aks", "발타크", PlanetType.OXIDE,
-            new ResourcesVo(15, 4, 3, 0, 2, 4, 0, 0, 10, null),
+            new ResourcesVo(15, 4, 3, 0, 2, 2, 0, 0, 10, null),
             new TechTracksVo(0, 0, 0, 1, 0, 0)),  // 가이아 1
 
     /* 지구 */
@@ -85,7 +85,7 @@ public enum FactionType {
             new TechTracksVo(0, 1, 0, 0, 0, 0)),  // 항해 1
 
     MOWEIDS("Moweids", "모웨이드", PlanetType.LOST_PLANET,
-            new ResourcesVo(15, 6, 6, 2, 4, 4, 0, 0, 10, null),
+            new ResourcesVo(15, 6, 5, 2, 4, 4, 0, 0, 10, null),
             new TechTracksVo(0, 0, 0, 1, 0, 0)),  // 가이아 1
 
     /* 소행성 */
@@ -94,7 +94,7 @@ public enum FactionType {
             new TechTracksVo(0, 0, 0, 0, 0, 1)),  // 과학 1
 
     DAKANIANS("Dakanians", "다카니안", PlanetType.ASTEROIDS,
-            new ResourcesVo(15, 7, 3, 2, 2, 4, 0, 0, 10, null),
+            new ResourcesVo(15, 7, 3, 2, 4, 2, 0, 0, 10, null),
             new TechTracksVo(0, 1, 0, 0, 1, 0));  // 항해 1, 경제 1
 
 
@@ -154,8 +154,10 @@ public enum FactionType {
      */
     public ResourcesVo getPiIncome() {
         return switch (this) {
-            // 하이브, 제노스: 4파순 + 1QIC
-            case IVITS, XENOS -> new ResourcesVo(0, 0, 0, 1, 0, 0, 0, 4, 0, null);
+            // 하이브: 4파순 + 1토큰 + 1QIC
+            case IVITS -> new ResourcesVo(0, 0, 0, 1, 1, 0, 0, 4, 0, null);
+            // 제노스: 4파순 + 1QIC
+            case XENOS -> new ResourcesVo(0, 0, 0, 1, 0, 0, 0, 4, 0, null);
             // 글린: 4파순 + 1광석
             case GLEENS -> new ResourcesVo(0, 1, 0, 0, 0, 0, 0, 4, 0, null);
             // 엠바스: 4파순 + 2토큰
@@ -164,8 +166,8 @@ public enum FactionType {
             case BESCODS -> new ResourcesVo(0, 0, 0, 0, 2, 0, 0, 4, 0, null);
             // 스페이스 자이언트: 6파순 + 1토큰
             case SPACE_GIANTS -> new ResourcesVo(0, 0, 0, 0, 1, 0, 0, 6, 0, null);
-            // 란티다: 4파순만 (토큰 없음)
-            case LANTIDS -> new ResourcesVo(0, 0, 0, 0, 0, 0, 0, 4, 0, null);
+            // 란티다: 4파순 + 1토큰
+            case LANTIDS -> new ResourcesVo(0, 0, 0, 0, 1, 0, 0, 4, 0, null);
             // 기본: 4파순 + 1토큰
             default -> new ResourcesVo(0, 0, 0, 0, 1, 0, 0, 4, 0, null);
         };

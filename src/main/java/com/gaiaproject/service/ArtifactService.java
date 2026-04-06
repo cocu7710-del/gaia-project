@@ -7,6 +7,7 @@ import com.gaiaproject.domain.entity.player.GamePlayerArtifact;
 import com.gaiaproject.domain.entity.player.GamePlayerState;
 import com.gaiaproject.domain.enumtype.artifact.ArtifactType;
 import com.gaiaproject.domain.enumtype.building.BuildingType;
+import com.gaiaproject.domain.enumtype.action.VpCategory;
 import com.gaiaproject.domain.enumtype.rounds.RoundScoringEvent;
 import com.gaiaproject.repository.artifact.GameArtifactOfferRepository;
 import com.gaiaproject.repository.building.GameBuildingRepository;
@@ -39,6 +40,7 @@ public class ArtifactService {
     private final GameHexRepository hexRepository;
     private final GameRepository gameRepository;
     private final RoundScoringService roundScoringService;
+    private final VpLogService vpLogService;
 
     /**
      * 인공물 초기 셋팅 (게임 시작 시 랜덤 4개)
@@ -148,7 +150,10 @@ public class ArtifactService {
         ps.addOre(reward.ore());
         ps.addKnowledge(reward.knowledge());
         ps.addQic(reward.qic());
-        if (reward.vp() > 0) ps.addVP(reward.vp());
+        if (reward.vp() > 0) {
+            ps.addVP(reward.vp());
+            vpLogService.logVp(ps.getGameId(), ps.getPlayerId(), VpCategory.ARTIFACT, reward.vp(), null, "Artifact immediate reward VP");
+        }
         // powerBowl3 추가는 applyIncome으로 처리
         if (reward.powerBowl1() > 0 || reward.powerBowl2() > 0 || reward.powerBowl3() > 0 || reward.powerCharge() > 0) {
             ps.applyIncome(new com.gaiaproject.dto.ResourcesVo(0, 0, 0, 0,
@@ -172,6 +177,7 @@ public class ArtifactService {
                 }
                 int vp = deepSectors.size() * 3;
                 ps.addVP(vp);
+                vpLogService.logVp(ps.getGameId(), ps.getPlayerId(), VpCategory.ARTIFACT, vp, null, "VP per deep sector with building");
                 log.info("[ARTIFACT_6] 깊은 구역 {}개 × 3VP = {}VP", deepSectors.size(), vp);
             }
             case "ADD_ASTEROID_PLANET_TYPE", "ADD_PRIMITIVE_PLANET_TYPE" -> {
@@ -192,11 +198,13 @@ public class ArtifactService {
             case "VP_PER_KNOWLEDGE_TRACK_LEVEL" -> {
                 int vp = ps.getTechScience() * 3;
                 ps.addVP(vp);
+                vpLogService.logVp(ps.getGameId(), ps.getPlayerId(), VpCategory.ARTIFACT, vp, null, "VP per knowledge track level");
                 log.info("[ARTIFACT_9] 지식 트랙 레벨 {} × 3VP = {}VP", ps.getTechScience(), vp);
             }
             case "VP_PER_GAIA_TRACK_LEVEL" -> {
                 int vp = ps.getTechGaia() * 3;
                 ps.addVP(vp);
+                vpLogService.logVp(ps.getGameId(), ps.getPlayerId(), VpCategory.ARTIFACT, vp, null, "VP per gaia track level");
                 log.info("[ARTIFACT_10] 가이아 트랙 레벨 {} × 3VP = {}VP", ps.getTechGaia(), vp);
             }
             case "VP_PER_TRACK_LEVEL_3_PLUS" -> {
@@ -209,6 +217,7 @@ public class ArtifactService {
                 if (ps.getTechScience() >= 3) count++;
                 int vp = count * 3;
                 ps.addVP(vp);
+                vpLogService.logVp(ps.getGameId(), ps.getPlayerId(), VpCategory.ARTIFACT, vp, null, "VP per track level 3+");
                 log.info("[ARTIFACT_11] 레벨3+트랙 {}개 × 3VP = {}VP", count, vp);
             }
             case "FEDERATION_TOKEN_DOUBLE_USE" -> {

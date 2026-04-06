@@ -16,91 +16,91 @@ public enum FederationTileType {
     /** 즉시: 지식 2, VP 6 */
     FED_TILE_1(
             new ResourcesVo(0, 0, 2, 0, 0, 0, 0, 0, 6, null),
-            false,
+            true,
             FederationActionType.NONE
     ),
 
     /** 즉시: 크레딧 6, VP 7 */
     FED_TILE_2(
             new ResourcesVo(6, 0, 0, 0, 0, 0, 0, 0, 7, null),
-            false,
+            true,
             FederationActionType.NONE
     ),
 
-    /** 즉시: VP 12 */
+    /** 즉시: VP 12 (비활성 연방토큰 — 획득 즉시 used 처리) */
     FED_TILE_3(
             new ResourcesVo(0, 0, 0, 0, 0, 0, 0, 0, 12, null),
-            true,
+            false,
             FederationActionType.NONE
     ),
 
     /** 즉시: VP 8, QIC 1 */
     FED_TILE_4(
             new ResourcesVo(0, 0, 0, 1, 0, 0, 0, 0, 8, null),
-            false,
+            true,
             FederationActionType.NONE
     ),
 
     /** 즉시: VP 7, 광석 2 */
     FED_TILE_5(
             new ResourcesVo(0, 2, 0, 0, 0, 0, 0, 0, 7, null),
-            false,
+            true,
             FederationActionType.NONE
     ),
 
     /** 즉시: VP 8, 파워 토큰 2 */
     FED_TILE_6(
             new ResourcesVo(0, 0, 0, 0, 2, 0, 0, 0, 8, null),
-            false,
+            true,
             FederationActionType.NONE
     ),
 
-    /** 즉시: 기본 기술타일 1개 가져오기 */
+    /** 즉시: 기본 기술타일 1개 가져오기 (자원 보상 없음, 기술 타일 획득은 별도 처리) */
     FED_EXP_TILE_1(
-            new ResourcesVo(0, 0, 8, 0, 0, 0, 0, 0, 0, null),
-            false,
+            new ResourcesVo(0, 0, 0, 0, 0, 0, 0, 0, 0, null),
+            true,
             FederationActionType.GAIN_BASIC_TECH_TILE
     ),
 
     /** 즉시: VP 4, 지식 4 */
     FED_EXP_TILE_2(
             new ResourcesVo(0, 0, 4, 0, 0, 0, 0, 0, 4, null),
-            false,
+            true,
             FederationActionType.NONE
     ),
 
     /** 즉시: VP 8, 크레딧 8 */
     FED_EXP_TILE_3(
             new ResourcesVo(8, 0, 0, 0, 0, 0, 0, 0, 8, null),
-            false,
+            true,
             FederationActionType.NONE
     ),
 
     /** 즉시: VP 4, 광석 2, QIC 1 */
     FED_EXP_TILE_4(
             new ResourcesVo(0, 2, 0, 1, 0, 0, 0, 0, 4, null),
-            false,
+            true,
             FederationActionType.NONE
     ),
 
     /** 즉시: 3 테라포밍 + 무료 광산 */
     FED_EXP_TILE_5(
             new ResourcesVo(0, 0, 0, 0, 0, 0, 0, 0, 0, null),
-            false,
+            true,
             FederationActionType.TERRAFORM_3_PLACE_MINE
     ),
 
     /** 즉시: VP 12 */
     FED_EXP_TILE_6(
             new ResourcesVo(0, 0, 0, 0, 0, 0, 0, 0, 12, null),
-            false,
+            true,
             FederationActionType.NONE
     ),
 
     /** 즉시: 사거리 제한 없이 무료 광산 */
     FED_EXP_TILE_7(
             new ResourcesVo(0, 0, 0, 0, 0, 0, 0, 0, 0, null),
-            false,
+            true,
             FederationActionType.PLACE_MINE_NO_RANGE_LIMIT
     ),
 
@@ -113,8 +113,8 @@ public enum FederationTileType {
 
     /** 즉시: VP 7, 파워 토큰 2 (3구역에 추가) */
     FED_EXP_TILE_8(
-            new ResourcesVo(0, 0, 0, 0, 2, 0, 0, 0, 7, null),
-            false,
+            new ResourcesVo(0, 0, 0, 0, 0, 0, 2, 0, 7, null),
+            true,
             FederationActionType.POWER_TOKEN_TO_BOWL_3
     );
 

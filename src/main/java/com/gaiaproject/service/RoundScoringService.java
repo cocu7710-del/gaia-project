@@ -3,6 +3,7 @@ package com.gaiaproject.service;
 import com.gaiaproject.domain.entity.player.GamePlayerState;
 import com.gaiaproject.domain.entity.rounds.GameRoundScoring;
 import com.gaiaproject.domain.enumtype.rounds.RoundScoringEvent;
+import com.gaiaproject.domain.enumtype.action.VpCategory;
 import com.gaiaproject.domain.enumtype.rounds.RoundScoringTileType;
 import com.gaiaproject.repository.rounds.GameRoundScoringRepository;
 import lombok.RequiredArgsConstructor;
@@ -21,6 +22,7 @@ import java.util.UUID;
 public class RoundScoringService {
 
     private final GameRoundScoringRepository roundScoringRepository;
+    private final VpLogService vpLogService;
 
     /**
      * 이벤트 발생 시 현재 라운드 점수 타일과 매칭되면 VP 지급
@@ -44,6 +46,7 @@ public class RoundScoringService {
 
         if (totalVp > 0) {
             ps.addVP(totalVp);
+            vpLogService.logVp(ps.getGameId(), ps.getPlayerId(), VpCategory.ROUND_SCORING, totalVp, round, "라운드 미션 VP");
             log.info("[ROUND_SCORING] game={}, player={}, tile={}, event={}, count={}, vp=+{}",
                     gameId, ps.getPlayerId(), tile, event, count, totalVp);
         }

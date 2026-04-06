@@ -37,4 +37,8 @@ public record EnterGameResponse(
     public static EnterGameResponse invalidRejoinToken(UUID roomId) {
         return new EnterGameResponse(roomId, null, false, false, null, "재입장 토큰이 유효하지 않습니다.");
     }
+
+    public static EnterGameResponse notRegistered(UUID roomId) {
+        return new EnterGameResponse(roomId, null, false, false, null, "등록되지 않은 닉네임입니다.");
+    }
 }

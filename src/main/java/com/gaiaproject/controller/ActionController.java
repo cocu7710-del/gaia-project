@@ -242,4 +242,99 @@ public class ActionController {
             return ResponseEntity.ok(java.util.Map.of("success", false, "message", e.getMessage()));
         }
     }
+
+    @Operation(summary = "파워 수입 항목 조회")
+    @GetMapping("/power-income/{playerId}")
+    public ResponseEntity<java.util.List<com.gaiaproject.dto.PowerIncomeItemVo>> getPowerIncomeItems(
+            @PathVariable UUID roomId, @PathVariable UUID playerId) {
+        var game = gameRepository.findById(roomId)
+                .orElseThrow(() -> new IllegalArgumentException("게임을 찾을 수 없습니다"));
+        var player = playerStateRepository.findByGameIdAndPlayerId(roomId, playerId)
+                .orElseThrow(() -> new IllegalStateException("플레이어 상태를 찾을 수 없습니다"));
+        return ResponseEntity.ok(incomeService.calculatePowerIncomeItems(roomId, player, game.getEconomyTrackOption()));
+    }
+
+    @Operation(summary = "액션 로그 조회")
+    @GetMapping("/log")
+    public ResponseEntity<java.util.List<java.util.Map<String, Object>>> getActionLog(@PathVariable UUID roomId) {
+        var actions = gameActionRepository.findByGameIdOrderByCreatedAtAsc(roomId);
+        var seats = seatRepository.findByGameIdOrderBySeatNoAsc(roomId);
+        var seatMap = new java.util.HashMap<UUID, com.gaiaproject.domain.entity.game.GameSeat>();
+        for (var s : seats) if (s.getPlayerId() != null) seatMap.put(s.getPlayerId(), s);
+
+        var result = new java.util.ArrayList<java.util.Map<String, Object>>();
+        for (var a : actions) {
+            if (a.getActionType() == com.gaiaproject.domain.enumtype.action.ActionType.POWER_INCOME) continue;
+            var seat = seatMap.get(a.getPlayerId());
+            java.util.Map<String, Object> dataMap = new java.util.LinkedHashMap<>();
+            if (a.getActionData() != null) {
+                try { dataMap = new com.fasterxml.jackson.databind.ObjectMapper().readValue(a.getActionData(), java.util.Map.class); } catch (Exception ignored) {}
+            }
+            var entry = new java.util.LinkedHashMap<String, Object>();
+            entry.put("actionId", a.getId().toString());
+            entry.put("playerId", a.getPlayerId().toString());
+            entry.put("seatNo", seat != null ? seat.getSeatNo() : 0);
+            entry.put("factionCode", seat != null && seat.getFactionType() != null ? seat.getFactionType().name() : "");
+            entry.put("roundNumber", a.getRoundNumber());
+            entry.put("turnSequence", a.getTurnSequence());
+            entry.put("actionType", a.getActionType().name());
+            entry.put("actionData", dataMap);
+            entry.put("createdAt", a.getCreatedAt() != null ? a.getCreatedAt().toString() : "");
+            result.add(entry);
+        }
+        return ResponseEntity.ok(result);
+    }
+
+    @Operation(summary = "파워 수입 항목 1개 적용")
+    @PostMapping("/power-income/apply")
+    public ResponseEntity<java.util.Map<String, Object>> applyPowerIncome(
+            @PathVariable UUID roomId, @RequestBody java.util.Map<String, Object> request) {
+        try {
+            UUID playerId = UUID.fromString((String) request.get("playerId"));
+            String itemId = (String) request.get("itemId");
+
+            var game = gameRepository.findById(roomId)
+                    .orElseThrow(() -> new IllegalArgumentException("게임을 찾을 수 없습니다"));
+            var player = playerStateRepository.findByGameIdAndPlayerId(roomId, playerId)
+                    .orElseThrow(() -> new IllegalStateException("플레이어 상태를 찾을 수 없습니다"));
+
+            // 항목 찾기
+            var items = incomeService.calculatePowerIncomeItems(roomId, player, game.getEconomyTrackOption());
+            var item = items.stream().filter(i -> i.id().equals(itemId)).findFirst()
+                    .orElseThrow(() -> new IllegalStateException("해당 파워 수입 항목을 찾을 수 없습니다: " + itemId));
+
+            incomeService.applySinglePowerIncome(player, item);
+
+            // 남은 항목 반환
+            var remaining = incomeService.calculatePowerIncomeItems(roomId, player, game.getEconomyTrackOption());
+            // 이미 적용된 항목 제외 — 재계산하면 자동으로 0이 됨 (파워/토큰이 이미 적용됨)
+            // 하지만 같은 항목이 다시 나올 수 있으므로 적용된 itemId를 제외해야 함
+            // → 클라이언트에서 관리 (적용된 항목 목록)
+
+            return ResponseEntity.ok(java.util.Map.of("success", true, "remaining", remaining.size()));
+        } catch (Exception e) {
+            return ResponseEntity.ok(java.util.Map.of("success", false, "message", e.getMessage()));
+        }
+    }
+
+    @Operation(summary = "파워 수입 선택 완료 (다음 플레이어로 진행)")
+    @PostMapping("/power-income/complete")
+    public ResponseEntity<java.util.Map<String, Object>> completePowerIncome(
+            @PathVariable UUID roomId, @RequestBody java.util.Map<String, Object> request) {
+        try {
+            UUID playerId = UUID.fromString((String) request.get("playerId"));
+            @SuppressWarnings("unchecked")
+            java.util.List<String> itemIds = (java.util.List<String>) request.getOrDefault("itemIds", java.util.List.of());
+            passService.continueAfterPowerIncome(roomId, playerId, itemIds);
+            return ResponseEntity.ok(java.util.Map.of("success", true));
+        } catch (Exception e) {
+            return ResponseEntity.ok(java.util.Map.of("success", false, "message", e.getMessage()));
+        }
+    }
+
+    private final com.gaiaproject.repository.game.GameRepository gameRepository;
+    private final com.gaiaproject.repository.player.GamePlayerStateRepository playerStateRepository;
+    private final com.gaiaproject.repository.game.GameSeatRepository seatRepository;
+    private final com.gaiaproject.repository.game.GameActionRepository gameActionRepository;
+    private final com.gaiaproject.service.PassService passService;
 }

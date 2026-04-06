@@ -9,6 +9,7 @@ import com.gaiaproject.domain.entity.map.GameHex;
 import com.gaiaproject.domain.entity.player.GamePlayerRoundBooster;
 import com.gaiaproject.domain.entity.player.GamePlayerState;
 import com.gaiaproject.domain.enumtype.building.BuildingType;
+import com.gaiaproject.domain.enumtype.action.VpCategory;
 import com.gaiaproject.domain.enumtype.booster.RoundBoosterType;
 import com.gaiaproject.domain.enumtype.player.PlanetType;
 import com.gaiaproject.dto.PassContextVo;
@@ -50,6 +51,12 @@ public class PassService {
     private final GameBuildingRepository buildingRepository;
     private final GameHexRepository hexRepository;
     private final GamePlayerStateRepository playerStateRepository;
+    private final VpLogService vpLogService;
+    private final GameEndScoringService gameEndScoringService;
+    private final com.gaiaproject.repository.game.GameActionRepository gameActionRepository;
+    private final ActionService actionService;
+    private final com.gaiaproject.repository.tech.GamePlayerTechTileRepository playerTechTileRepository;
+    private final com.gaiaproject.repository.player.GamePlayerFederationTokenRepository federationTokenRepository;
 
     /**
      * 라운드 패스 (다음 라운드 부스터 선택 포함)
@@ -85,8 +92,60 @@ public class PassService {
                 GamePlayerState ps = playerStateRepository.findByGameIdAndPlayerId(gameId, playerId)
                         .orElseThrow(() -> new IllegalStateException("플레이어 상태를 찾을 수 없습니다"));
                 ps.addVP(passVp);
+                vpLogService.logVp(gameId, playerId, VpCategory.BOOSTER_PASS, passVp, currentRound, "부스터 패스 VP: " + boosterType.name());
                 playerStateRepository.save(ps);
                 log.info("패스 VP 지급: playerId={}, booster={}, vp={}", playerId, boosterType, passVp);
+            }
+        }
+
+        // 2. 고급 기술 타일 패스 VP 지급
+        {
+            GamePlayerState ps = playerStateRepository.findByGameIdAndPlayerId(gameId, playerId)
+                    .orElse(null);
+            if (ps != null) {
+                var myTiles = playerTechTileRepository.findByGameIdAndPlayerIdAndIsCovered(gameId, playerId, false);
+                PassContextVo ctx = buildPassContext(gameId, playerId);
+                int advPassVp = 0;
+                for (var tile : myTiles) {
+                    String code = tile.getTechTileCode();
+                    if (!code.startsWith("ADV_")) continue;
+                    try {
+                        var advCode = com.gaiaproject.domain.enumtype.tech.AdvancedTechTileCode.valueOf(code);
+                        String effect = advCode.getAbility().getSpecialEffect();
+                        if (effect == null) continue;
+                        int vp = switch (effect) {
+                            case "VP_PER_LOST_PLANET_PASS" -> ctx.deepSectorStructures() * 2;
+                            case "VP_PER_ASTEROID_SECTOR_PASS" -> {
+                                // 소행성 구역 수 (sectorId 기반)
+                                var buildings = buildingRepository.findByGameIdAndPlayerId(gameId, playerId);
+                                var hexRepo = hexRepository;
+                                java.util.Set<String> asteroidSectors = new java.util.HashSet<>();
+                                for (var b : buildings) {
+                                    hexRepo.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR()).ifPresent(h -> {
+                                        if (h.getPlanetType() == com.gaiaproject.domain.enumtype.player.PlanetType.ASTEROIDS && h.getSectorId() != null) {
+                                            asteroidSectors.add(h.getSectorId());
+                                        }
+                                    });
+                                }
+                                yield asteroidSectors.size() * 2;
+                            }
+                            case "VP_PER_FEDERATION_TOKEN_PASS" -> {
+                                long fedCount = federationTokenRepository.countByGameIdAndPlayerId(gameId, playerId);
+                                yield (int) fedCount * 3;
+                            }
+                            case "VP_PER_LAB_PASS" -> ctx.researchLabs() * 3;
+                            case "VP_PER_PLANET_TYPE_PASS" -> ctx.colonizedPlanetTypeKinds() * 1;
+                            default -> 0;
+                        };
+                        advPassVp += vp;
+                    } catch (IllegalArgumentException ignored) {}
+                }
+                if (advPassVp > 0) {
+                    ps.addVP(advPassVp);
+                    vpLogService.logVp(gameId, playerId, VpCategory.ADV_TECH_TILE, advPassVp, currentRound, "고급 타일 패스 VP");
+                    playerStateRepository.save(ps);
+                    log.info("고급 타일 패스 VP: playerId={}, vp={}", playerId, advPassVp);
+                }
             }
         }
 
@@ -107,26 +166,28 @@ public class PassService {
             playerBoosterRepository.delete(currentBooster);
         }
 
-        // 4. 새 부스터 선택
-        GameBoosterOffer nextOffer = boosterOfferRepository
-                .findByGameIdAndBoosterCode(gameId, nextRoundBoosterCode)
-                .orElse(null);
+        // 4. 새 부스터 선택 (6라운드에서는 스킵)
+        if (currentRound < 6) {
+            GameBoosterOffer nextOffer = boosterOfferRepository
+                    .findByGameIdAndBoosterCode(gameId, nextRoundBoosterCode)
+                    .orElse(null);
 
-        if (nextOffer == null || !nextOffer.isAvailable()) {
-            return PassRoundResponse.fail(gameId, playerId, "선택할 수 없는 부스터입니다");
+            if (nextOffer == null || !nextOffer.isAvailable()) {
+                return PassRoundResponse.fail(gameId, playerId, "선택할 수 없는 부스터입니다");
+            }
+
+            // 새 부스터 할당
+            nextOffer.takeByPlayer(playerId);
+            nextOffer.pick(currentSeat.getSeatNo());
+            boosterOfferRepository.save(nextOffer);
+
+            GamePlayerRoundBooster newBooster = GamePlayerRoundBooster.builder()
+                    .gameId(gameId)
+                    .playerId(playerId)
+                    .roundBoosterType(RoundBoosterType.valueOf(nextRoundBoosterCode))
+                    .build();
+            playerBoosterRepository.save(newBooster);
         }
-
-        // 새 부스터 할당
-        nextOffer.takeByPlayer(playerId);
-        nextOffer.pick(currentSeat.getSeatNo());
-        boosterOfferRepository.save(nextOffer);
-
-        GamePlayerRoundBooster newBooster = GamePlayerRoundBooster.builder()
-                .gameId(gameId)
-                .playerId(playerId)
-                .roundBoosterType(RoundBoosterType.valueOf(nextRoundBoosterCode))
-                .build();
-        playerBoosterRepository.save(newBooster);
 
         // 5. 패스 기록 생성
         GamePlayerPass pass = GamePlayerPass.builder()
@@ -135,11 +196,6 @@ public class PassService {
                 .roundNumber(currentRound)
                 .build();
         passRepository.save(pass);
-
-        // 이번 라운드 패스 순서 기록 (turnOrder: 0=미패스, 1~4=패스순서)
-        long passOrder = passRepository.countByGameIdAndRoundNumber(gameId, currentRound);
-        currentSeat.setTurnOrder((int) passOrder);
-        seatRepository.save(currentSeat);
 
         // 발타크: 패스 시 사용 가능한 포머 → QIC 자동 변환
         {
@@ -166,20 +222,40 @@ public class PassService {
 
         int nextSeatNo;
         if (allPassed) {
-            // 라운드 종료
             nextSeatNo = 0;
-            boolean itarsWaiting = endRoundAndStartNext(game);
-            webSocketService.broadcastPlayerPassed(gameId, playerId, currentSeat.getSeatNo(), true);
-            if (!itarsWaiting) {
-                webSocketService.broadcastRoundStarted(gameId, game.getCurrentRound());
+            if (currentRound >= 6) {
+                // 6라운드 종료 → 최종 점수 계산 → 게임 종료
+                gameEndScoringService.calculateFinalScores(gameId);
+                game.changeStatus("FINISHED");
+                game.setGamePhase("FINISHED");
+                gameRepository.save(game);
+                webSocketService.broadcastPlayerPassed(gameId, playerId, currentSeat.getSeatNo(), true);
+                webSocketService.broadcast(com.gaiaproject.dto.websocket.GameEvent.of(gameId, "GAME_FINISHED", java.util.Map.of()));
+                log.info("게임 종료: gameId={}", gameId);
+            } else {
+                // 라운드 종료 → 다음 라운드
+                boolean itarsWaiting = endRoundAndStartNext(game);
+                webSocketService.broadcastPlayerPassed(gameId, playerId, currentSeat.getSeatNo(), true);
+                if (!itarsWaiting) {
+                    webSocketService.broadcastRoundStarted(gameId, game.getCurrentRound());
+                }
             }
         } else {
-            // 다음 턴 계산
+            // 현재 플레이어 타이머 종료
+            actionService.stopTurnTimer(gameId, playerId);
+            // 다음 턴 계산 (setTurnOrder 전에 호출해야 정렬이 올바름)
             nextSeatNo = calculateNextTurnSeatNo(game);
+            // 이번 라운드 패스 순서 기록 (다음 라운드 플레이 순서 결정용)
+            // calculateNextTurnSeatNo 이후에 설정해야 현재 라운드 정렬이 올바름
+            long passOrder = passRepository.countByGameIdAndRoundNumber(gameId, currentRound);
+            currentSeat.setTurnOrder((int) passOrder);
+            seatRepository.save(currentSeat);
             game.nextTurn(nextSeatNo);
             gameRepository.save(game);
             webSocketService.broadcastPlayerPassed(gameId, playerId, currentSeat.getSeatNo(), false);
             webSocketService.broadcastTurnChanged(gameId, nextSeatNo);
+            // 다음 플레이어 타이머 시작
+            actionService.startTurnTimerBySeatNo(gameId, nextSeatNo);
         }
 
         return PassRoundResponse.success(gameId, playerId, currentRound, nextSeatNo, allPassed);
@@ -193,28 +269,36 @@ public class PassService {
         int currentRound = game.getCurrentRound();
         int currentSeatNo = game.getCurrentTurnSeatNo();
 
-        // 모든 좌석 조회
-        List<GameSeat> seats = seatRepository.findByGameIdOrderBySeatNo(gameId);
-        int maxSeatNo = seats.size();
+        // 점유된 좌석만 추출
+        List<GameSeat> occupied = seatRepository.findByGameIdOrderBySeatNo(gameId).stream()
+                .filter(s -> s.getPlayerId() != null)
+                .collect(java.util.stream.Collectors.toList());
 
-        // 패스하지 않은 플레이어 찾기 (순환)
-        for (int i = 1; i <= maxSeatNo; i++) {
-            int nextSeatNo = (currentSeatNo % maxSeatNo) + 1;
-            currentSeatNo = nextSeatNo;
+        // turnOrder가 설정된 경우(라운드 2+) 이전 라운드 패스 순서 기준 정렬, 아니면 seatNo 기준 유지
+        boolean hasTurnOrder = occupied.stream().anyMatch(s -> s.getTurnOrder() > 0);
+        if (hasTurnOrder) {
+            occupied.sort(java.util.Comparator.comparingInt(GameSeat::getTurnOrder));
+        }
 
-            // 해당 좌석의 플레이어가 패스했는지 확인
-            GameSeat seat = seats.stream()
-                    .filter(s -> s.getSeatNo() == nextSeatNo)
-                    .findFirst()
-                    .orElse(null);
+        // 현재 좌석의 위치 찾기
+        int currentIdx = -1;
+        for (int i = 0; i < occupied.size(); i++) {
+            if (occupied.get(i).getSeatNo() == currentSeatNo) {
+                currentIdx = i;
+                break;
+            }
+        }
 
-            if (seat != null && seat.getPlayerId() != null) {
-                boolean hasPassed = passRepository.existsByGameIdAndPlayerIdAndRoundNumber(
-                        gameId, seat.getPlayerId(), currentRound);
+        // 다음 패스 안 한 플레이어 찾기 (순환)
+        for (int i = 1; i <= occupied.size(); i++) {
+            int nextIdx = (currentIdx + i) % occupied.size();
+            GameSeat seat = occupied.get(nextIdx);
 
-                if (!hasPassed) {
-                    return nextSeatNo;
-                }
+            boolean hasPassed = passRepository.existsByGameIdAndPlayerIdAndRoundNumber(
+                    gameId, seat.getPlayerId(), currentRound);
+
+            if (!hasPassed) {
+                return seat.getSeatNo();
             }
         }
 
@@ -233,7 +317,11 @@ public class PassService {
         int researchLabs     = (int) buildings.stream().filter(b -> b.getBuildingType() == BuildingType.RESEARCH_LAB).count();
         int academies        = (int) buildings.stream().filter(b -> b.getBuildingType() == BuildingType.ACADEMY).count();
         int planetaryInsts   = (int) buildings.stream().filter(b -> b.getBuildingType() == BuildingType.PLANETARY_INSTITUTE).count();
-        int gaiaformers      = (int) buildings.stream().filter(b -> b.getBuildingType() == BuildingType.GAIAFORMER).count();
+        int gaiaformersOnMap = (int) buildings.stream().filter(b -> b.getBuildingType() == BuildingType.GAIAFORMER).count();
+        GamePlayerState gfState = playerStateRepository.findByGameIdAndPlayerId(gameId, playerId).orElse(null);
+        int stockGf = gfState != null ? gfState.getStockGaiaformer() : 0;
+        int convertedGf = gfState != null ? gfState.getBaltaksConvertedGaiaformers() : 0;
+        int gaiaformers      = stockGf + gaiaformersOnMap + convertedGf; // 소각하지 않은 포머 = 재고 + 맵 배치 + 발타크 변환
 
         // 건물이 있는 헥스 조회하여 행성 타입 분석
         java.util.Map<String, PlanetType> hexPlanetMap = new java.util.HashMap<>();
@@ -246,7 +334,11 @@ public class PassService {
         }
 
         int gaiaPlanets = (int) hexPlanetMap.values().stream().filter(p -> p == PlanetType.GAIA).count();
-        int deepStructures = (int) hexPlanetMap.values().stream().filter(p -> p == PlanetType.LOST_PLANET).count();
+        // 딥섹터 건물 수 (LOST_PLANET뿐 아니라 딥섹터 내 모든 건물)
+        int deepStructures = (int) buildings.stream().filter(b -> {
+            var hex = hexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR()).orElse(null);
+            return hex != null && hex.getSectorId() != null && hex.getSectorId().startsWith("DEEP_SECTOR");
+        }).count();
         long colonizedKinds = hexPlanetMap.values().stream()
                 .filter(p -> p != PlanetType.EMPTY && p != PlanetType.TRANSDIM && p != PlanetType.GAIA)
                 .distinct().count();
@@ -278,17 +370,53 @@ public class PassService {
             seatRepository.findByGameIdAndPlayerId(gameId, firstPassedPlayerId)
                     .ifPresent(seat -> game.nextTurn(seat.getSeatNo()));
         }
-        // turnOrder 전부 0으로 리셋 (새 라운드 시작)
+        // turnOrder를 패스 순서대로 설정 (먼저 패스 = 다음 라운드 선 플레이어 = turnOrder 1)
         List<com.gaiaproject.domain.entity.game.GameSeat> allSeats = seatRepository.findByGameIdOrderBySeatNo(gameId);
+        java.util.Map<UUID, Integer> passOrder = new java.util.HashMap<>();
+        for (int i = 0; i < passes.size(); i++) {
+            passOrder.put(passes.get(i).getPlayerId(), i + 1);
+        }
         for (var seat : allSeats) {
-            seat.setTurnOrder(0);
+            seat.setTurnOrder(passOrder.getOrDefault(seat.getPlayerId(), 0));
         }
         seatRepository.saveAllAndFlush(allSeats);
         gameRepository.save(game);
 
-        // 1. 수입 배분
-        incomeService.applyRoundIncome(game);
+        // 1. 비파워 수입 배분 + 리셋
+        incomeService.applyNonPowerIncome(game);
 
+        // 1-1. 파워 수입 선택 페이즈 체크 (동시 진행)
+        try {
+            List<GamePlayerState> allPlayersForPower = playerStateRepository.findByGameId(gameId);
+            // 파워 수입이 있는 플레이어별 항목 수집
+            java.util.List<java.util.Map<String, Object>> allPlayerItems = new java.util.ArrayList<>();
+            for (var ps : allPlayersForPower) {
+                var powerItems = incomeService.calculatePowerIncomeItems(gameId, ps, game.getEconomyTrackOption());
+                if (!powerItems.isEmpty()) {
+                    var itemMaps = powerItems.stream().map(item -> java.util.Map.<String, Object>of(
+                            "id", item.id(), "source", item.source(), "label", item.label(),
+                            "powerCharge", item.powerCharge(), "powerBowl1", item.powerBowl1()
+                    )).toList();
+                    allPlayerItems.add(java.util.Map.of(
+                            "playerId", ps.getPlayerId().toString(),
+                            "items", itemMaps
+                    ));
+                }
+            }
+            if (!allPlayerItems.isEmpty()) {
+                game.setGamePhase("POWER_INCOME_PHASE");
+                gameRepository.save(game);
+                webSocketService.broadcast(com.gaiaproject.dto.websocket.GameEvent.of(gameId, "POWER_INCOME_CHOICE",
+                        java.util.Map.of("players", allPlayerItems)));
+                log.info("파워 수입 동시 선택 대기: game={}, 대상 {}명", gameId, allPlayerItems.size());
+                return true;
+            }
+        } catch (Exception e) {
+            log.error("파워 수입 체크 중 오류 발생 — 기존 플로우로 진행: {}", e.getMessage(), e);
+            incomeService.applyRoundIncome(game);
+        }
+
+        // 파워 수입 없으면 기존 플로우 진행
         // 2. TRANSDIM → GAIA 헥스 변환
         gaiaformingService.processGaiaPlanetConversion(gameId);
 
@@ -407,6 +535,137 @@ public class PassService {
         }
 
         // 일반 진행
+        gaiaformingService.returnAllGaiaPower(gameId);
+        game.setGamePhase("PLAYING");
+        gameRepository.save(game);
+        webSocketService.broadcastRoundStarted(gameId, game.getCurrentRound());
+    }
+
+    /**
+     * 파워 수입 선택 완료 (동시 진행): 항목 순서대로 적용 후 완료 체크
+     * @param completedPlayerId 완료한 플레이어
+     * @param itemIds 플레이어가 선택한 순서대로의 항목 ID 리스트
+     */
+    public void continueAfterPowerIncome(UUID gameId, UUID completedPlayerId, java.util.List<String> itemIds) {
+        Game game = gameRepository.findById(gameId)
+                .orElseThrow(() -> new IllegalArgumentException("게임을 찾을 수 없습니다"));
+        GamePlayerState ps = playerStateRepository.findByGameIdAndPlayerId(gameId, completedPlayerId)
+                .orElseThrow(() -> new IllegalStateException("플레이어 상태를 찾을 수 없습니다"));
+
+        // 항목을 순서대로 적용
+        var allItems = incomeService.calculatePowerIncomeItems(gameId, ps, game.getEconomyTrackOption());
+        for (String itemId : itemIds) {
+            var item = allItems.stream().filter(i -> i.id().equals(itemId)).findFirst().orElse(null);
+            if (item != null) {
+                incomeService.applySinglePowerIncome(ps, item);
+            }
+        }
+
+        // 이 플레이어 수입 완료 → 다른 플레이어가 아직 완료 안 했는지 체크
+        // 모든 대상 플레이어의 파워가 수입 전과 동일하면 아직 미완료
+        // → 간단하게 powerIncomeCompleted 카운트 관리 (game_action에 마커)
+        // 완료 마커 저장
+        int turnSeq = (int) gameActionRepository.findByGameIdAndRoundNumber(gameId, game.getCurrentRound()).stream().count() + 1;
+        gameActionRepository.save(com.gaiaproject.domain.entity.game.GameAction.builder()
+                .gameId(gameId).playerId(completedPlayerId)
+                .roundNumber(game.getCurrentRound())
+                .turnSequence(turnSeq)
+                .actionType(com.gaiaproject.domain.enumtype.action.ActionType.POWER_INCOME)
+                .actionData("{\"completed\":true}")
+                .build());
+
+        // 완료한 플레이어 수 체크
+        long completedCount = gameActionRepository.findByGameIdAndRoundNumber(gameId, game.getCurrentRound()).stream()
+                .filter(a -> a.getActionType() == com.gaiaproject.domain.enumtype.action.ActionType.POWER_INCOME)
+                .count();
+        // 전체 파워 수입 대상 수 체크
+        long totalTarget = playerStateRepository.findByGameId(gameId).stream()
+                .filter(p -> !incomeService.calculatePowerIncomeItems(gameId, p, game.getEconomyTrackOption()).isEmpty())
+                .count();
+
+        log.info("파워 수입 완료: game={}, player={}, completed={}/{}", gameId, completedPlayerId, completedCount, totalTarget);
+
+        // 개별 완료 브로드캐스트 (보라색 테두리 제거용)
+        webSocketService.broadcast(com.gaiaproject.dto.websocket.GameEvent.of(gameId, "POWER_INCOME_COMPLETED",
+                java.util.Map.of("completedPlayerId", completedPlayerId.toString())));
+
+        if (completedCount >= totalTarget) {
+            // 전원 완료 → 다음 단계
+            gaiaformingService.processGaiaPlanetConversion(gameId);
+            game.setGamePhase("PLAYING");
+            continueAfterGaiaConversion(game);
+        }
+        // 아직 대기 중인 플레이어 있으면 그냥 리턴 (FE에서 개별 완료)
+    }
+
+    /** 가이아 변환 후 테란/팅커/아이타 체크 (기존 endRoundAndStartNext 후반부 추출) */
+    private void continueAfterGaiaConversion(Game game) {
+        UUID gameId = game.getId();
+        List<GamePlayerState> allPlayers = playerStateRepository.findByGameId(gameId);
+
+        // 테란 PI 체크
+        GamePlayerState terransPlayer = allPlayers.stream()
+                .filter(p -> {
+                    var ft = p.getFactionType();
+                    if (ft == null) ft = seatRepository.findByGameIdAndSeatNo(gameId, p.getSeatNo())
+                            .map(s -> s.getFactionType()).orElse(null);
+                    return ft == com.gaiaproject.domain.enumtype.player.FactionType.TERRANS
+                            && p.getStockPlanetaryInstitute() == 0
+                            && p.getGaiaPower() > 0;
+                })
+                .findFirst().orElse(null);
+
+        if (terransPlayer != null) {
+            game.setGamePhase("TERRANS_GAIA_PHASE");
+            gameRepository.save(game);
+            webSocketService.broadcast(com.gaiaproject.dto.websocket.GameEvent.of(gameId, "TERRANS_GAIA_CHOICE",
+                    java.util.Map.of("terransPlayerId", terransPlayer.getPlayerId().toString(),
+                            "gaiaPower", terransPlayer.getGaiaPower())));
+            return;
+        }
+
+        // 팅커로이드 체크
+        GamePlayerState tinkeroidsPlayer = allPlayers.stream()
+                .filter(p -> p.getFactionType() == com.gaiaproject.domain.enumtype.player.FactionType.TINKEROIDS
+                        && p.getStockPlanetaryInstitute() == 0)
+                .findFirst().orElse(null);
+
+        if (tinkeroidsPlayer != null) {
+            int round = game.getCurrentRound() != null ? game.getCurrentRound() : 1;
+            java.util.List<String> available = getTinkeroidsAvailableActions(tinkeroidsPlayer, round);
+            if (!available.isEmpty()) {
+                game.setGamePhase("TINKEROIDS_ACTION_PHASE");
+                gameRepository.save(game);
+                webSocketService.broadcast(com.gaiaproject.dto.websocket.GameEvent.of(gameId, "TINKEROIDS_ACTION_CHOICE",
+                        java.util.Map.of("tinkeroidsPlayerId", tinkeroidsPlayer.getPlayerId().toString(),
+                                "availableActions", available, "currentRound", round)));
+                return;
+            }
+        }
+
+        // 아이타 체크
+        GamePlayerState itarsPlayer = allPlayers.stream()
+                .filter(p -> p.getFactionType() == com.gaiaproject.domain.enumtype.player.FactionType.ITARS
+                        && p.getStockPlanetaryInstitute() == 0
+                        && p.getGaiaPower() >= 4)
+                .findFirst().orElse(null);
+
+        if (itarsPlayer != null) {
+            gaiaformingService.returnGaiaPowerExcept(gameId, itarsPlayer.getPlayerId());
+            int keep = (itarsPlayer.getGaiaPower() / 4) * 4;
+            int returnAmt = itarsPlayer.getGaiaPower() - keep;
+            if (returnAmt > 0) {
+                itarsPlayer.removeGaiaPower(returnAmt);
+                itarsPlayer.addPowerToBowl1(returnAmt);
+                playerStateRepository.save(itarsPlayer);
+            }
+            game.setGamePhase("ITARS_GAIA_PHASE");
+            gameRepository.save(game);
+            webSocketService.broadcastItarsGaiaChoice(gameId, itarsPlayer.getPlayerId(), keep / 4);
+            return;
+        }
+
+        // 일반: 모든 플레이어 가이아 복귀
         gaiaformingService.returnAllGaiaPower(gameId);
         game.setGamePhase("PLAYING");
         gameRepository.save(game);

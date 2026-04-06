@@ -7,6 +7,7 @@ import com.gaiaproject.domain.entity.leech.GameLeechOffer;
 import com.gaiaproject.domain.entity.player.GamePlayerState;
 import com.gaiaproject.domain.enumtype.building.BuildingType;
 import com.gaiaproject.domain.enumtype.player.FactionType;
+import com.gaiaproject.domain.enumtype.action.VpCategory;
 import com.gaiaproject.repository.game.GameRepository;
 import com.gaiaproject.repository.game.GameSeatRepository;
 import com.gaiaproject.repository.leech.GameLeechOfferRepository;
@@ -33,6 +34,7 @@ public class PowerLeechService {
     private final ActionService actionService;
     private final GamePlayerTechTileRepository playerTechTileRepository;
     private final com.gaiaproject.repository.map.GameHexRepository hexRepository;
+    private final VpLogService vpLogService;
 
     /**
      * 건물 배치/업그레이드 후 파워 리치 배치 처리.
@@ -120,8 +122,13 @@ public class PowerLeechService {
             boolean isTaklonsPI = faction == FactionType.TAKLONS && ps.getStockPlanetaryInstitute() == 0;
             boolean canDeclineOne = faction == FactionType.ITARS || isTaklonsPI;
 
-            // 실제 순환 가능한 파워 (bowl1 + bowl2만 순환 가능)
-            int chargeablePower = ps.getPowerBowl1() + ps.getPowerBowl2();
+            // 실제 순환 가능한 파워: bowl1은 2칸(1→2→3), bowl2는 1칸(2→3) 이동 가능
+            // 타클론 브레인스톤: bowl1이면 2, bowl2이면 1 추가
+            int chargeablePower = ps.getPowerBowl1() * 2 + ps.getPowerBowl2();
+            if (faction == FactionType.TAKLONS && ps.getBrainstoneBowl() != null) {
+                if (ps.getBrainstoneBowl() == 1) chargeablePower += 2;
+                else if (ps.getBrainstoneBowl() == 2) chargeablePower += 1;
+            }
             int effectivePower = Math.min(power, chargeablePower);
 
             // 순환 가능한 파워가 0이면 스킵
@@ -130,7 +137,7 @@ public class PowerLeechService {
                 continue;
             }
 
-            // 순환 가능한 파워가 1이면 자동 수령 (아이타/타클론PI 제외)
+            // 1파워이면 자동 수령 (아이타/타클론PI 제외)
             if (effectivePower == 1 && !canDeclineOne) {
                 applyPowerToPlayer(ps, 1, 0, isTaklonsPI, null);
                 playerStateRepository.save(ps);
@@ -215,6 +222,11 @@ public class PowerLeechService {
                 actionService.advanceTurnAndBroadcast(game);
             }
         } else {
+            // 건설자 타이머 정지, 결정자 타이머 시작
+            actionService.stopTurnTimer(gameId, triggerPlayerId);
+            for (GameLeechOffer po : pendingOffers) {
+                actionService.startTurnTimer(gameId, po.getReceivePlayerId());
+            }
             // 모든 PENDING offer를 동시에 브로드캐스트 (각 플레이어가 독립적으로 결정)
             broadcastLeechOfferedAll(gameId, batchKey, pendingOffers);
         }
@@ -234,6 +246,9 @@ public class PowerLeechService {
         if (!offer.isPending()) {
             throw new IllegalStateException("이미 결정된 리치입니다");
         }
+
+        // 결정자 타이머 정지
+        actionService.stopTurnTimer(gameId, decidingPlayerId);
 
         if (accept) {
             GamePlayerState ps = playerStateRepository
@@ -277,8 +292,12 @@ public class PowerLeechService {
                 UUID triggerPlayerId = resolveTriggerPlayerId(gameId,
                         game.getCurrentTurnSeatNo() != null ? game.getCurrentTurnSeatNo() : 1);
                 if (triggerPlayerId == null) triggerPlayerId = offer.getTriggerPlayerId();
+                // 건설자 타이머 재시작 (후속 액션 처리용)
+                actionService.startTurnTimer(gameId, triggerPlayerId);
                 broadcastFollowUp(gameId, triggerPlayerId, followUpType, followUpData);
             } else {
+                // advanceTurnAndBroadcast 내부에서 현재 턴 타이머 정지 + 다음 턴 타이머 시작
+                // 건설자 타이머는 이미 정지 상태이므로 추가 시간 누적 없음
                 actionService.advanceTurnAndBroadcast(game);
             }
         }
@@ -303,6 +322,7 @@ public class PowerLeechService {
             if (isTaklons) ps.addPowerToken(1);
         }
         if (vpCost > 0) ps.addVP(-vpCost);
+        if (vpCost > 0) vpLogService.logVp(ps.getGameId(), ps.getPlayerId(), VpCategory.LEECH_COST, -vpCost, null, "파워 리치 비용");
     }
 
     private GameLeechOffer saveOffer(UUID gameId, String batchKey, UUID triggerPlayerId,

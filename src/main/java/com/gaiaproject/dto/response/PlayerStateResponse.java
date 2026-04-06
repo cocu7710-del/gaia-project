@@ -65,5 +65,13 @@ public record PlayerStateResponse(
         Boolean qicAcademyActionUsed,
 
         // 팅커로이드: 현재 라운드 선택된 액션 코드
-        String tinkeroidsCurrentAction
+        String tinkeroidsCurrentAction,
+
+        // 비딩 패널티 (게임 종료 시 VP 차감)
+        Integer bidPenalty,
+
+        // 턴 누적 사용 시간 (초)
+        Integer usedTimeSeconds,
+        // 현재 턴 시작 시각 (ISO, 턴 진행 중이면 non-null)
+        String turnStartedAt
 ) {}

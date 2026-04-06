@@ -51,8 +51,8 @@ public class GaiaformingService {
         return switch (gaiaLevel) {
             case 1, 2 -> 6;
             case 3 -> 4;
-            case 4 -> 5;
-            default -> 4;
+            case 4, 5 -> 3;
+            default -> 6;
         };
     }
 

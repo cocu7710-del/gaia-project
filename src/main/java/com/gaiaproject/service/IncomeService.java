@@ -29,6 +29,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.gaiaproject.dto.PowerIncomeItemVo;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -86,6 +88,212 @@ public class IncomeService {
         }
 
         log.info("라운드 수입 적용 완료 - gameId: {}, 경제 트랙 옵션: {}", gameId, economyOption);
+    }
+
+    /**
+     * 비파워 수입만 적용 (파워 순환/토큰 추가 제외) + 리셋 처리
+     */
+    public void applyNonPowerIncome(Game game) {
+        UUID gameId = game.getId();
+        EconomyTrackOption economyOption = game.getEconomyTrackOption();
+        List<GamePlayerState> players = playerStateRepository.findByGameId(gameId);
+
+        for (GamePlayerState player : players) {
+            player.resetBoosterActionUsed();
+            player.resetFactionAbilityUsed();
+            player.resetQicAcademyActionUsed();
+            player.returnConvertedGaiaformers();
+            resetTechTileActions(gameId, player.getPlayerId());
+            applyTerransGaiaIncome(player);
+            applyNonPowerIncomeToPlayer(gameId, player, economyOption);
+            playerStateRepository.saveAndFlush(player);
+        }
+        log.info("비파워 수입 적용 완료 - gameId: {}", gameId);
+    }
+
+    /**
+     * 비파워 수입만 적용 (ResourcesVo에서 powerCharge/powerBowl1 제외)
+     */
+    private void applyNonPowerIncomeToPlayer(UUID gameId, GamePlayerState player, EconomyTrackOption economyOption) {
+        UUID playerId = player.getPlayerId();
+
+        // 1) 종족별 기본 수입 (파워 없음)
+        applyFactionBaseIncome(gameId, player);
+
+        // 2) 부스터 수입 — 비파워만
+        var boosterOpt = playerBoosterRepository.findByGameIdAndPlayerId(gameId, playerId);
+        if (boosterOpt.isPresent()) {
+            ResourcesVo income = boosterOpt.get().getRoundBoosterType().getIncome();
+            player.applyIncome(stripPower(income));
+        }
+
+        // 3) 경제 트랙 — 비파워만
+        int economyLevel = player.getTechEconomy();
+        if (economyLevel > 0) {
+            ResourcesVo ecoIncome = TechTrackIncomeVo.getEconomyIncome(economyLevel, economyOption);
+            player.applyIncome(stripPower(ecoIncome));
+        }
+
+        // 4) 과학 트랙 (파워 없음)
+        int scienceLevel = player.getTechScience();
+        if (scienceLevel > 0) {
+            player.applyIncome(TechTrackIncomeVo.getScienceIncome(scienceLevel));
+        }
+
+        // 5) 기술 타일 — 비파워만
+        for (var tile : playerTechTileRepository.findByGameIdAndPlayerIdAndIsCovered(gameId, playerId, false)) {
+            try {
+                TechTileCode code = TechTileCode.valueOf(tile.getTechTileCode());
+                if (code.getAbility().getType() == TechAbilityType.INCOME) {
+                    ResourcesVo income = new ResourcesVo(
+                            code.getAbility().getCreditIncome() != null ? code.getAbility().getCreditIncome() : 0,
+                            code.getAbility().getOreIncome() != null ? code.getAbility().getOreIncome() : 0,
+                            code.getAbility().getKnowledgeIncome() != null ? code.getAbility().getKnowledgeIncome() : 0,
+                            code.getAbility().getQicIncome() != null ? code.getAbility().getQicIncome() : 0,
+                            0, 0, 0, 0, 0, null);
+                    player.applyIncome(income);
+                }
+            } catch (IllegalArgumentException ignored) {}
+        }
+
+        // 6) 인공물 수입 — 비파워만
+        applyArtifactIncome(gameId, playerId, player);
+
+        // 7) 건물 수입 — 비파워만
+        applyBuildingIncomeNonPower(player);
+    }
+
+    /** ResourcesVo에서 파워 관련 제거 */
+    private ResourcesVo stripPower(ResourcesVo r) {
+        return new ResourcesVo(r.credits(), r.ore(), r.knowledge(), r.qic(), 0, 0, 0, 0, r.vp(), null);
+    }
+
+    /** 건물 수입 — 비파워만 (파워 순환/토큰 추가 제외) */
+    private void applyBuildingIncomeNonPower(GamePlayerState player) {
+        FactionType buildFaction = player.getFactionType();
+        if (buildFaction == null) {
+            buildFaction = gameSeatRepository.findByGameIdAndSeatNo(player.getGameId(), player.getSeatNo())
+                    .map(GameSeat::getFactionType).orElse(null);
+        }
+        int knowledgeAcademyCount = gameBuildingRepository.countByGameIdAndPlayerIdAndBuildingTypeAndAcademyType(
+                player.getGameId(), player.getPlayerId(), BuildingType.ACADEMY, AcademyType.KNOWLEDGE);
+        boolean isItars = buildFaction == FactionType.ITARS;
+        boolean isBescods = buildFaction == FactionType.BESCODS;
+        boolean isNevlas2 = buildFaction == FactionType.NEVLAS;
+        ResourcesVo buildingIncome = BuildingIncomeVo.getTotalBuildingIncome(
+                player.getStockMine(), player.getStockTradingStation(), player.getStockResearchLab(),
+                player.getStockPlanetaryInstitute(), knowledgeAcademyCount, isItars, isBescods, isNevlas2);
+        player.applyIncome(stripPower(buildingIncome));
+
+        // PI 수입 — 비파워만
+        if (buildFaction != null && player.getStockPlanetaryInstitute() == 0) {
+            ResourcesVo piIncome = buildFaction.getPiIncome();
+            player.applyIncome(stripPower(piIncome));
+        }
+    }
+
+    /**
+     * 특정 플레이어의 파워 수입 항목 리스트 계산
+     */
+    public List<PowerIncomeItemVo> calculatePowerIncomeItems(UUID gameId, GamePlayerState player, EconomyTrackOption economyOption) {
+        List<PowerIncomeItemVo> items = new ArrayList<>();
+        UUID playerId = player.getPlayerId();
+        int idx = 0;
+
+        // 1) 부스터
+        var boosterOpt = playerBoosterRepository.findByGameIdAndPlayerId(gameId, playerId);
+        if (boosterOpt.isPresent()) {
+            ResourcesVo income = boosterOpt.get().getRoundBoosterType().getIncome();
+            if (income.powerCharge() > 0) {
+                items.add(new PowerIncomeItemVo("BOOSTER_CHARGE_" + (idx++), "BOOSTER",
+                        "부스터: " + income.powerCharge() + "파순", income.powerCharge(), 0));
+            }
+            if (income.powerBowl1() > 0) {
+                items.add(new PowerIncomeItemVo("BOOSTER_TOKEN_" + (idx++), "BOOSTER",
+                        "부스터: " + income.powerBowl1() + "토추", 0, income.powerBowl1()));
+            }
+        }
+
+        // 2) 경제 트랙
+        int ecoLevel = player.getTechEconomy();
+        if (ecoLevel > 0) {
+            ResourcesVo ecoIncome = TechTrackIncomeVo.getEconomyIncome(ecoLevel, economyOption);
+            if (ecoIncome.powerCharge() > 0) {
+                items.add(new PowerIncomeItemVo("ECO_CHARGE_" + (idx++), "ECONOMY_TRACK",
+                        "경제트랙: " + ecoIncome.powerCharge() + "파순", ecoIncome.powerCharge(), 0));
+            }
+        }
+
+        // 3) 기술 타일 (INCOME 타입)
+        for (var tile : playerTechTileRepository.findByGameIdAndPlayerIdAndIsCovered(gameId, playerId, false)) {
+            try {
+                TechTileCode code = TechTileCode.valueOf(tile.getTechTileCode());
+                if (code.getAbility().getType() == TechAbilityType.INCOME) {
+                    Integer pc = code.getAbility().getPowerCharge();
+                    if (pc != null && pc > 0) {
+                        items.add(new PowerIncomeItemVo("TECH_CHARGE_" + (idx++), "TECH_TILE",
+                                "기술타일: " + pc + "파순", pc, 0));
+                    }
+                }
+            } catch (IllegalArgumentException ignored) {}
+        }
+
+        // 4) 건물 — 기본 건물 수입 파워
+        FactionType buildFaction = player.getFactionType();
+        if (buildFaction == null) {
+            buildFaction = gameSeatRepository.findByGameIdAndSeatNo(player.getGameId(), player.getSeatNo())
+                    .map(GameSeat::getFactionType).orElse(null);
+        }
+        int knowledgeAcademyCount = gameBuildingRepository.countByGameIdAndPlayerIdAndBuildingTypeAndAcademyType(
+                player.getGameId(), playerId, BuildingType.ACADEMY, AcademyType.KNOWLEDGE);
+        boolean isItars = buildFaction == FactionType.ITARS;
+        boolean isBescods2 = buildFaction == FactionType.BESCODS;
+        boolean isNevlas3 = buildFaction == FactionType.NEVLAS;
+        ResourcesVo buildingIncome = BuildingIncomeVo.getTotalBuildingIncome(
+                player.getStockMine(), player.getStockTradingStation(), player.getStockResearchLab(),
+                player.getStockPlanetaryInstitute(), knowledgeAcademyCount, isItars, isBescods2, isNevlas3);
+        if (buildingIncome.powerCharge() > 0) {
+            items.add(new PowerIncomeItemVo("BUILDING_CHARGE_" + (idx++), "BUILDING",
+                    "건물: " + buildingIncome.powerCharge() + "파순", buildingIncome.powerCharge(), 0));
+        }
+
+        // 5) 종족 기본 수입 — 파워 토큰 (아이타/란티다 등)
+        if (buildFaction != null) {
+            ResourcesVo baseIncome = buildFaction.getBaseIncome();
+            if (baseIncome.powerBowl1() > 0) {
+                items.add(new PowerIncomeItemVo("BASE_TOKEN_" + (idx++), "FACTION_BASE",
+                        "기본: " + baseIncome.powerBowl1() + "토추", 0, baseIncome.powerBowl1()));
+            }
+        }
+
+        // 6) PI 수입 — 파워 관련
+        if (buildFaction != null && player.getStockPlanetaryInstitute() == 0) {
+            ResourcesVo piIncome = buildFaction.getPiIncome();
+            if (piIncome.powerCharge() > 0) {
+                items.add(new PowerIncomeItemVo("PI_CHARGE_" + (idx++), "PI",
+                        "의회: " + piIncome.powerCharge() + "파순", piIncome.powerCharge(), 0));
+            }
+            if (piIncome.powerBowl1() > 0) {
+                items.add(new PowerIncomeItemVo("PI_TOKEN_" + (idx++), "PI",
+                        "의회: " + piIncome.powerBowl1() + "토추", 0, piIncome.powerBowl1()));
+            }
+        }
+
+        return items;
+    }
+
+    /**
+     * 파워 수입 항목 1개 적용
+     */
+    public void applySinglePowerIncome(GamePlayerState player, PowerIncomeItemVo item) {
+        if (item.powerCharge() > 0) {
+            player.chargePowerWithFactionRules(item.powerCharge());
+        }
+        if (item.powerBowl1() > 0) {
+            player.addPowerToken(item.powerBowl1());
+        }
+        playerStateRepository.save(player);
+        log.info("[POWER_INCOME] player={}, item={}, charge={}, token={}", player.getPlayerId(), item.id(), item.powerCharge(), item.powerBowl1());
     }
 
     /**
@@ -302,6 +510,8 @@ public class IncomeService {
         int knowledgeAcademyCount = gameBuildingRepository.countByGameIdAndPlayerIdAndBuildingTypeAndAcademyType(
                 player.getGameId(), player.getPlayerId(), BuildingType.ACADEMY, AcademyType.KNOWLEDGE);
         boolean isItars = buildFaction == FactionType.ITARS;
+        boolean isBescods3 = buildFaction == FactionType.BESCODS;
+        boolean isNevlas = buildFaction == FactionType.NEVLAS;
 
         ResourcesVo buildingIncome = BuildingIncomeVo.getTotalBuildingIncome(
                 player.getStockMine(),
@@ -309,7 +519,9 @@ public class IncomeService {
                 player.getStockResearchLab(),
                 player.getStockPlanetaryInstitute(),
                 knowledgeAcademyCount,
-                isItars
+                isItars,
+                isBescods3,
+                isNevlas
         );
 
         player.applyIncome(buildingIncome);

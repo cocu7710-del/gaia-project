@@ -60,4 +60,10 @@ public class GameAdvTechOffer {
     public void preUpdate() {
         this.updatedAt = LocalDateTime.now();
     }
+
+    /** 고급 타일 점유 처리 */
+    public void take(UUID playerId) {
+        this.takenByPlayerId = playerId;
+        this.updatedAt = LocalDateTime.now();
+    }
 }

@@ -27,7 +27,16 @@ public record GameEvent(
         STATE_UPDATED,          // 상태 갱신 (범용)
         LEECH_OFFERED,          // 파워 리치 결정 요청
         LEECH_DECIDED,          // 파워 리치 결정 완료 (다음 결정자 또는 모두 완료)
-        DEFERRED_ACTION_REQUIRED  // 후속 액션 필요 (예: 2삽 1광산)
+        DEFERRED_ACTION_REQUIRED,  // 후속 액션 필요 (예: 2삽 1광산)
+        POWER_INCOME_CHOICE,      // 파워 수입 순서 선택 요청 (동시)
+        POWER_INCOME_COMPLETED,   // 파워 수입 개별 완료
+        GAME_FINISHED,            // 게임 종료
+        ACTION_LOGGED,            // 액션 로그 기록됨
+        BIDDING_STARTED,          // 비딩 시작
+        BID_UPDATED,              // 비딩 상태 변경 (입찰/패스)
+        BID_WON,                  // 비딩 낙찰 (좌석 선택 대기)
+        BID_SEAT_PICKED,          // 비딩 낙찰자 좌석 선택 완료
+        BIDDING_COMPLETED         // 전체 비딩 완료
     }
 
     public static GameEvent playerJoined(UUID roomId, UUID playerId, String nickname) {

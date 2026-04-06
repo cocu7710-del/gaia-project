@@ -1,5 +1,6 @@
 package com.gaiaproject.domain.entity.game;
 
+import com.gaiaproject.domain.enumtype.tech.CommonAdvTileConditionType;
 import com.gaiaproject.domain.enumtype.tech.EconomyTrackOption;
 import jakarta.persistence.*;
 import lombok.Getter;
@@ -51,6 +52,11 @@ public class Game {
     @Column(name = "economy_track_option", length = 20)
     private EconomyTrackOption economyTrackOption;
 
+    /** COMMON 고급 기술 타일 획득 조건 (VP_25 / FLEET_3) */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "common_adv_tile_condition", length = 20)
+    private CommonAdvTileConditionType commonAdvTileCondition;
+
     /** 게임 페이즈 (SETUP_MINE_FIRST, SETUP_MINE_SECOND, PLAYING) */
     @Column(name = "game_phase", length = 30)
     private String gamePhase;
@@ -76,6 +82,18 @@ public class Game {
      */
     @Column(name = "moweids_extra_ring_planet", length = 20)
     private String moweidsExtraRingPlanet;
+
+    /** 비딩 라운드 (1~3, 0=비딩 없음) */
+    @Column(name = "bidding_round", nullable = false)
+    private int biddingRound = 0;
+
+    /** 현재 비딩 최고액 */
+    @Column(name = "bidding_current_bid", nullable = false)
+    private int biddingCurrentBid = 0;
+
+    /** 현재 비딩 턴 플레이어 */
+    @Column(name = "bidding_turn_player_id")
+    private UUID biddingTurnPlayerId;
 
     /** 생성 시각 */
     @Column(name = "created_at", nullable = false)
@@ -116,6 +134,7 @@ public class Game {
         this.currentRound = 1;
         this.currentTurnSeatNo = 1;
         this.economyTrackOption = EconomyTrackOption.random();
+        this.commonAdvTileCondition = CommonAdvTileConditionType.random();
         this.updatedAt = LocalDateTime.now();
     }
 
@@ -129,6 +148,12 @@ public class Game {
     public void nextRound() {
         this.currentRound++;
         this.currentTurnSeatNo = 1;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    /** 맵 회전 대기 페이즈 시작 (4명 입장 후, 비딩 전) */
+    public void startMapRotate() {
+        this.gamePhase = "MAP_ROTATE";
         this.updatedAt = LocalDateTime.now();
     }
 
@@ -214,6 +239,48 @@ public class Game {
     /** 부스터 선택 단계인지 확인 */
     public boolean isInBoosterSelectionPhase() {
         return "BOOSTER_SELECTION".equals(gamePhase);
+    }
+
+    /** 비딩 시작 */
+    public void startBidding() {
+        this.gamePhase = "BIDDING";
+        this.biddingRound = 1;
+        this.biddingCurrentBid = 0;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    /** 비딩 낙찰 → 좌석 선택 대기 */
+    public void enterBidSeatPick(UUID winnerPlayerId) {
+        this.gamePhase = "BID_SEAT_PICK";
+        this.biddingTurnPlayerId = winnerPlayerId;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    /** 다음 비딩 라운드 */
+    public void nextBiddingRound(UUID firstTurnPlayerId) {
+        this.gamePhase = "BIDDING";
+        this.biddingRound++;
+        this.biddingCurrentBid = 0;
+        this.biddingTurnPlayerId = firstTurnPlayerId;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    /** 비딩 종료 */
+    public void finishBidding() {
+        this.gamePhase = null;
+        this.biddingRound = 0;
+        this.biddingCurrentBid = 0;
+        this.biddingTurnPlayerId = null;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    public void setBiddingCurrentBid(int bid) {
+        this.biddingCurrentBid = bid;
+    }
+
+    public void setBiddingTurnPlayerId(UUID playerId) {
+        this.biddingTurnPlayerId = playerId;
+        this.updatedAt = LocalDateTime.now();
     }
 
     /** 부스터 선택 완료 → 실제 게임 시작 */
