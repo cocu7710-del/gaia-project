@@ -7,6 +7,12 @@ spring:
     username: gaia
     password: gaia
     driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 15
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
 
   jpa:
     hibernate:
@@ -14,6 +20,11 @@ spring:
     properties:
       hibernate:
         format_sql: true
+        jdbc.batch_size: 20
+        order_inserts: true
+        order_updates: true
+        jdbc.fetch_size: 50
+        query.in_clause_parameter_padding: true
     open-in-view: false
 
   flyway:
@@ -23,5 +34,5 @@ spring:
 
 logging:
   level:
-    org.hibernate.SQL: debug
-    org.hibernate.orm.jdbc.bind: trace
+    org.hibernate.SQL: warn
+    org.hibernate.orm.jdbc.bind: warn

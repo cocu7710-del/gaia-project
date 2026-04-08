@@ -248,6 +248,10 @@ public class GameService {
         if (!"MAP_ROTATE".equals(game.getGamePhase())) {
             throw new IllegalStateException("4명 입장 후 맵 회전 페이즈에서만 비딩을 시작할 수 있습니다.");
         }
+        // 비딩 시작 전 팅커로이드/모웨이드 추가 3삽 행성 할당 (캐릭터 판에 표시)
+        List<GameSeat> seats = gameSeatRepository.findByGameIdOrderBySeatNoAsc(roomId);
+        assignExtraRingPlanetsIfNeeded(game, seats);
+        gameRepository.save(game);
         biddingService.startBidding(roomId);
     }
 
@@ -285,25 +289,26 @@ public class GameService {
         Game game = gameRepository.findById(roomId)
                 .orElseThrow(() -> new IllegalArgumentException("room not found: " + roomId));
 
-        var seats = gameSeatRepository.findByGameIdOrderBySeatNoAsc(roomId).stream()
-                .map(s -> {
-                    // 플레이어 닉네임 조회
-                    String nickname = null;
-                    if (s.getPlayerId() != null) {
-                        nickname = playerRepository.findById(s.getPlayerId())
-                                .map(Player::getNickname)
-                                .orElse(null);
-                    }
-                    return new GamePublicStateResponse.SeatView(
-                            s.getSeatNo(),
-                            s.getTurnOrder(),
-                            s.getFactionType().name(),                 // 종족 코드
-                            s.getFactionType().getDisplayNameKo(),     // 종족 한글명
-                            s.getFactionType().getHomePlanet().name(), // 고향 행성 타입 코드
-                            s.getPlayerId(),
-                            nickname
-                    );
-                })
+        var seatList = gameSeatRepository.findByGameIdOrderBySeatNoAsc(roomId);
+        // 플레이어 닉네임 일괄 조회 (N+1 → 1 쿼리)
+        var playerIds = seatList.stream()
+                .map(GameSeat::getPlayerId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        var nicknameMap = playerIds.isEmpty() ? Map.<UUID, String>of()
+                : playerRepository.findAllById(playerIds).stream()
+                        .collect(Collectors.toMap(Player::getId, Player::getNickname));
+
+        var seats = seatList.stream()
+                .map(s -> new GamePublicStateResponse.SeatView(
+                        s.getSeatNo(),
+                        s.getTurnOrder(),
+                        s.getFactionType().name(),                 // 종족 코드
+                        s.getFactionType().getDisplayNameKo(),     // 종족 한글명
+                        s.getFactionType().getHomePlanet().name(), // 고향 행성 타입 코드
+                        s.getPlayerId(),
+                        s.getPlayerId() != null ? nicknameMap.get(s.getPlayerId()) : null
+                ))
                 .collect(Collectors.toList());
 
         String economyOption = game.getEconomyTrackOption() != null
@@ -424,13 +429,18 @@ public class GameService {
         var seatMap = gameSeatRepository.findByGameIdOrderBySeatNoAsc(roomId).stream()
                 .collect(Collectors.toMap(GameSeat::getSeatNo, s -> s));
 
+        // 플레이어 닉네임 일괄 조회 (N+1 → 1 쿼리)
+        var pPlayerIds = participants.stream()
+                .map(GameParticipant::getPlayerId)
+                .collect(Collectors.toList());
+        var pNicknameMap = pPlayerIds.isEmpty() ? Map.<UUID, String>of()
+                : playerRepository.findAllById(pPlayerIds).stream()
+                        .collect(Collectors.toMap(Player::getId, Player::getNickname));
+
         // 참가자 정보 변환
         var participantViews = participants.stream()
                 .map(p -> {
-                    // 플레이어 닉네임 조회
-                    String nickname = playerRepository.findById(p.getPlayerId())
-                            .map(Player::getNickname)
-                            .orElse("Unknown");
+                    String nickname = pNicknameMap.getOrDefault(p.getPlayerId(), "Unknown");
 
                     // 좌석 선택 시 종족명
                     String factionName = null;
@@ -626,8 +636,10 @@ public class GameService {
         game.startGame();  // status = IN_PROGRESS, currentRound = 1
         game.startInitialMinePlacement(setupOrderJson);  // gamePhase = SETUP_MINE_FIRST
 
-        // 5-1) 팅커로이드/모웨이드 추가 3삽 행성 랜덤 할당
-        assignExtraRingPlanetsIfNeeded(game, seats);
+        // 5-1) 팅커로이드/모웨이드 추가 3삽 행성 (비딩 시작 시 이미 할당된 경우 스킵)
+        if (game.getTinkeroidsExtraRingPlanet() == null && game.getMoweidsExtraRingPlanet() == null) {
+            assignExtraRingPlanetsIfNeeded(game, seats);
+        }
 
         // 5-2) 모웨이드: TF_MARS 함대 우주선 자동 입장 (VP 제거 없음)
         for (GameSeat seat : seats) {

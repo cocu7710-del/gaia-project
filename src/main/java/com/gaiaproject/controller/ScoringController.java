@@ -41,12 +41,17 @@ public class ScoringController {
     private final com.gaiaproject.repository.federation.GameFederationGroupRepository federationGroupRepository;
     private final com.gaiaproject.repository.federation.GameFederationBuildingRepository federationBuildingRepository;
     private final com.gaiaproject.service.VpLogService vpLogService;
+    private final com.gaiaproject.repository.player.GamePlayerStateRepository playerStateRepository;
+    private final com.gaiaproject.repository.player.GamePlayerFederationTokenRepository playerFederationTokenRepository;
+    private final com.gaiaproject.repository.federation.GameFederationTokenHexRepository federationTokenHexRepository;
 
     @Operation(summary = "게임 결과 조회 (카테고리별 VP)")
     @GetMapping("/result")
     public ResponseEntity<Map<String, Object>> getGameResult(@PathVariable UUID roomId) {
         var categoryScores = vpLogService.getGameResult(roomId);
+        var perRoundScores = vpLogService.getDetailScores(roomId);
         var seats = seatRepository.findByGameIdOrderBySeatNoAsc(roomId);
+        var allPlayerStates = playerStateRepository.findByGameId(roomId);
 
         List<Map<String, Object>> players = new ArrayList<>();
         for (var seat : seats) {
@@ -59,14 +64,20 @@ public class ScoringController {
 
             Map<String, Integer> cats = new LinkedHashMap<>();
             var playerCats = categoryScores.getOrDefault(seat.getPlayerId(), Map.of());
-            int total = 0;
             for (var cat : com.gaiaproject.domain.enumtype.action.VpCategory.values()) {
                 int val = playerCats.getOrDefault(cat, 0);
                 cats.put(cat.name(), val);
-                total += val;
             }
             playerResult.put("categoryScores", cats);
-            playerResult.put("totalVP", total);
+            // 라운드별 점수 (ROUND_SCORING_R1~R6, BOOSTER_PASS_R1~R6)
+            playerResult.put("roundScores", perRoundScores.getOrDefault(seat.getPlayerId(), Map.of()));
+            // totalVP는 실제 victoryPoints 필드에서 가져옴
+            int totalVP = allPlayerStates.stream()
+                    .filter(ps -> ps.getPlayerId().equals(seat.getPlayerId()))
+                    .findFirst()
+                    .map(ps -> ps.getVictoryPoints())
+                    .orElse(0);
+            playerResult.put("totalVP", totalVP);
             players.add(playerResult);
         }
 
@@ -165,7 +176,13 @@ public class ScoringController {
                 yield types.size();
             }
 
-            case "FINAL_TILE_FEDERATION_POWER" -> (int) federationGroupRepository.findByGameIdAndPlayerId(gameId, playerId).size();
+            case "FINAL_TILE_FEDERATION_POWER" -> {
+                // 연방 형성 시 사용한 파워 토큰(위성) 수
+                var groups = federationGroupRepository.findByGameIdAndPlayerId(gameId, playerId);
+                int tokenCount = 0;
+                for (var g : groups) tokenCount += federationTokenHexRepository.findByFederationGroupId(g.getId()).size();
+                yield tokenCount;
+            }
 
             case "FINAL_TILE_PI_ACADEMY_DISTANCE" -> {
                 GameBuilding pi = myBuildings.stream()

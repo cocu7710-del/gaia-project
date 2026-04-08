@@ -110,11 +110,11 @@ public enum ArtifactType {
             "즉시: 레벨 3 이상 트랙당 3VP"
     ),
 
-    /** 즉시: 연구 트랙 3칸 이상 전진한 트랙당 3VP */
+    /** 즉시: 행성 유형당 1VP + 3VP */
     ARTIFACT_12(
             ResourcesVo.zero(),
             ArtifactEffectType.IMMEDIATE,
-            "VP_PER_TRACK_LEVEL_3_PLUS",
+            "VP_PER_PLANET_TYPE_PLUS_3",
             "즉시: 행성 유형당 1VP + 3VP"
     ),
 

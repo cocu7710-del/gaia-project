@@ -31,7 +31,7 @@ public class TechTrackIncomeVo {
             case 2 -> new ResourcesVo(2, 1, 0, 0, 0, 0, 0, 2, 0, null);  // 크레딧 2, 광석 1, 파워차징 2
             case 3 -> getEconomyLevel3Income(option);
             case 4 -> getEconomyLevel4Income(option);
-            case 5 -> new ResourcesVo(6, 3, 0, 0, 0, 0, 0, 2, 0, null);  // 크레딧 6, 광석 3, 파워차징 2
+            case 5 -> ResourcesVo.zero();  // 5단계: 수입 사라지고 즉시 보상(6c+3o+6pw)으로 전환
             default -> ResourcesVo.zero();
         };
     }
@@ -86,7 +86,8 @@ public class TechTrackIncomeVo {
             case 1 -> new ResourcesVo(0, 0, 1, 0, 0, 0, 0, 0, 0, null);
             case 2 -> new ResourcesVo(0, 0, 2, 0, 0, 0, 0, 0, 0, null);
             case 3 -> new ResourcesVo(0, 0, 3, 0, 0, 0, 0, 0, 0, null);
-            case 4, 5 -> new ResourcesVo(0, 0, 4, 0, 0, 0, 0, 0, 0, null);
+            case 4 -> new ResourcesVo(0, 0, 4, 0, 0, 0, 0, 0, 0, null);
+            case 5 -> ResourcesVo.zero();  // 5단계: 수입 사라지고 즉시 9지식으로 전환
             default -> ResourcesVo.zero();
         };
     }

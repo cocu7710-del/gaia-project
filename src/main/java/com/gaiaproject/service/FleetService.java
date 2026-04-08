@@ -79,7 +79,7 @@ public class FleetService {
         int slotIndex = fleetProbeRepository.countByGameIdAndFleetName(gameId, fleetName);
 
         playerState.spendVP(biddingCost);
-        vpLogService.logVp(playerState.getGameId(), playerState.getPlayerId(), VpCategory.FLEET, -biddingCost, null, "함대 입장 -" + biddingCost + "VP");
+        vpLogService.logVp(playerState.getGameId(), playerState.getPlayerId(), VpCategory.FLEET_ENTRY, -biddingCost, null, "함대 입장 -" + biddingCost + "VP");
         // 항법 QIC 소모
         if (qicUsed > 0) {
             playerState.spendQic(qicUsed);

@@ -117,8 +117,13 @@ public class IncomeService {
     private void applyNonPowerIncomeToPlayer(UUID gameId, GamePlayerState player, EconomyTrackOption economyOption) {
         UUID playerId = player.getPlayerId();
 
-        // 1) 종족별 기본 수입 (파워 없음)
-        applyFactionBaseIncome(gameId, player);
+        // 1) 종족별 기본 수입 (파워 제외 — 토큰 추가는 파워 수입 단계에서 처리)
+        {
+            FactionType faction = player.getFactionType();
+            if (faction == null) faction = gameSeatRepository.findByGameIdAndSeatNo(gameId, player.getSeatNo())
+                    .map(GameSeat::getFactionType).orElse(null);
+            if (faction != null) player.applyIncome(stripPower(faction.getBaseIncome()));
+        }
 
         // 2) 부스터 수입 — 비파워만
         var boosterOpt = playerBoosterRepository.findByGameIdAndPlayerId(gameId, playerId);

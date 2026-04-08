@@ -61,6 +61,8 @@ public class FleetShipActionService {
     private final com.gaiaproject.repository.game.GameRepository gameRepository;
     private final FederationFormService federationFormService;
     private final GamePlayerFederationTokenRepository federationTokenRepository;
+    private final com.gaiaproject.repository.player.GamePlayerArtifactRepository playerArtifactRepository;
+    private final com.gaiaproject.repository.artifact.GameArtifactOfferRepository artifactOfferRepository;
 
     /** 함대 선박 특수 액션 실행 */
     public FleetShipActionResponse executeAction(UUID gameId, FleetShipActionRequest request) {
@@ -76,8 +78,16 @@ public class FleetShipActionService {
         GamePlayerState ps = playerStateRepository.findByGameIdAndPlayerId(gameId, playerId)
                 .orElseThrow(() -> new IllegalStateException("플레이어 상태를 찾을 수 없습니다"));
 
+        // 타클론: FE에서 useBrainstone 플래그를 전달받아 설정
+        if (request.useBrainstone() != null && request.useBrainstone()) {
+            ps.setUseBrainstone(true);
+        }
+
+        // QIC 액션 코드 (ADV_TILE_21: QIC 액션당 4VP)
+        final java.util.Set<String> QIC_ACTION_CODES = java.util.Set.of("TF_MARS_VP", "ECLIPSE_VP", "REBELLION_TECH", "TWILIGHT_FED");
+
         try {
-            return switch (actionCode) {
+            FleetShipActionResponse result = switch (actionCode) {
                 // === TF_MARS ===
                 case "TF_MARS_VP" -> executeTfMarsVp(gameId, playerId, ps, actionCode);
                 case "TF_MARS_GAIAFORM" -> executeTfMarsGaiaform(gameId, playerId, ps, actionCode, request.hexQ(), request.hexR(), request.qicUsed());
@@ -97,10 +107,26 @@ public class FleetShipActionService {
                 case "TWILIGHT_FED" -> executeTwilightFed(gameId, playerId, ps, actionCode, request.federationTileCode(), request.trackCode(), request.techTrackCode(), request.coveredTileCode());
                 case "TWILIGHT_UPGRADE" -> executeTwilightUpgrade(gameId, playerId, ps, actionCode, request.hexQ(), request.hexR(), request.trackCode(), request.techTrackCode(), request.coveredTileCode());
                 case "TWILIGHT_NAV" -> executeTwilightNav(gameId, playerId, ps, actionCode);
-                case "TWILIGHT_ARTIFACT" -> executeTwilightArtifact(gameId, playerId, ps, actionCode, request.trackCode(), request.federationTileCode());
+                case "TWILIGHT_ARTIFACT" -> executeTwilightArtifact(gameId, playerId, ps, actionCode, request.trackCode(), request.federationTileCode(), request.techTrackCode(), request.coveredTileCode());
 
                 default -> FleetShipActionResponse.fail(gameId, actionCode, "알 수 없는 함대 액션: " + actionCode);
             };
+
+            // ADV_TILE_21: 함대 QIC 액션 성공 시 4VP
+            if (result.success() && QIC_ACTION_CODES.contains(actionCode)) {
+                boolean hasAdvTile21 = techTileRepository.findByGameIdAndPlayerIdAndIsCovered(gameId, playerId, false)
+                        .stream().anyMatch(t -> "ADV_TILE_21".equals(t.getTechTileCode()));
+                if (hasAdvTile21) {
+                    GamePlayerState psLatest = playerStateRepository.findByGameIdAndPlayerId(gameId, playerId).orElse(null);
+                    if (psLatest != null) {
+                        psLatest.addVP(4);
+                        playerStateRepository.save(psLatest);
+                        log.info("[ADV_TILE_21] 함대 QIC 액션 4VP: player={}, action={}", playerId, actionCode);
+                    }
+                }
+            }
+
+            return result;
         } catch (IllegalStateException e) {
             return FleetShipActionResponse.fail(gameId, actionCode, e.getMessage());
         }
@@ -113,7 +139,9 @@ public class FleetShipActionService {
     /** TF_MARS_VP: QIC 2 → VP (보유 기술 타일 수 + 2) */
     private FleetShipActionResponse executeTfMarsVp(UUID gameId, UUID playerId, GamePlayerState ps, String code) {
         ps.spendQic(2);
-        int techTileCount = techTileRepository.findByGameIdAndPlayerId(gameId, playerId).size();
+        int techTileCount = (int) techTileRepository.findByGameIdAndPlayerId(gameId, playerId).stream()
+                .filter(t -> t.getTechTileCode().startsWith("BASIC_") || t.getTechTileCode().startsWith("COMMON_") || t.getTechTileCode().startsWith("EXPANSION_"))
+                .count();
         int vp = techTileCount + 2;
         ps.addVP(vp);
         vpLogService.logVp(ps.getGameId(), ps.getPlayerId(), VpCategory.FLEET, vp, null, "TF_MARS VP");
@@ -191,6 +219,9 @@ public class FleetShipActionService {
                         .map(GameHex::getPlanetType).orElse(null))
                 .filter(pt -> pt != null && pt != PlanetType.EMPTY && pt != PlanetType.TRANSDIM)
                 .collect(Collectors.toSet());
+        // 인공물 가상 행성 종류
+        if (playerArtifactRepository.existsByGameIdAndPlayerIdAndArtifactType(gameId, playerId, "ARTIFACT_7")) colonizedTypes.add(PlanetType.ASTEROIDS);
+        if (playerArtifactRepository.existsByGameIdAndPlayerIdAndArtifactType(gameId, playerId, "ARTIFACT_8")) colonizedTypes.add(PlanetType.LOST_PLANET);
         int vp = colonizedTypes.size() + 2;
         ps.addVP(vp);
         vpLogService.logVp(ps.getGameId(), ps.getPlayerId(), VpCategory.FLEET, vp, null, "ECLIPSE VP");
@@ -318,7 +349,7 @@ public class FleetShipActionService {
         String actionData = String.format("{\"actionCode\":\"%s\",\"hexQ\":%d,\"hexR\":%d}", code, hexQ, hexR);
         String error = buildingService.upgradeCore(game, playerId, building, BuildingType.TRADING_STATION,
                 null, null, null, null,
-                ActionType.FLEET_SHIP_ACTION, actionData, true);
+                ActionType.FLEET_SHIP_ACTION, actionData, true, null, null);
         if (error != null) return FleetShipActionResponse.fail(gameId, code, error);
 
         log.info("[함대] {}: game={}, player={}, hex=({},{})", code, gameId, playerId, hexQ, hexR);
@@ -421,7 +452,7 @@ public class FleetShipActionService {
         try {
             String error = buildingService.upgradeCore(game, playerId, building, BuildingType.RESEARCH_LAB,
                     null, tileCode, techTrackCode, coveredTileCode,
-                    ActionType.FLEET_SHIP_ACTION, actionData, false);
+                    ActionType.FLEET_SHIP_ACTION, actionData, false, null, null);
             if (error != null) return FleetShipActionResponse.fail(gameId, code, error);
         } catch (IllegalStateException e) {
             return FleetShipActionResponse.fail(gameId, code, e.getMessage());
@@ -443,15 +474,35 @@ public class FleetShipActionService {
     }
 
     /** TWILIGHT_ARTIFACT: 파워 6 소각 → 인공물 선택 획득 */
-    private FleetShipActionResponse executeTwilightArtifact(UUID gameId, UUID playerId, GamePlayerState ps, String code, String artifactCode, String federationTileCode) {
+    private FleetShipActionResponse executeTwilightArtifact(UUID gameId, UUID playerId, GamePlayerState ps, String code, String artifactCode, String federationTileCode, String techTrackCode, String coveredTileCode) {
+        // ARTIFACT_13 + FED_EXP_TILE_1: trackCode에 기술타일 코드가 들어옴
+        // federationTileCode가 있으면 ARTIFACT_13으로 간주, 원래 trackCode 값 보존
+        String originalTrackCode = artifactCode; // FE에서 trackCode 자리에 기술타일 코드가 올 수 있음
+        // federationTileCode가 있으면 ARTIFACT_13 (FE가 trackCode에 기술타일 코드를 보냄)
+        if (federationTileCode != null && !federationTileCode.isBlank()) {
+            artifactCode = "ARTIFACT_13";
+        }
         if (artifactCode == null || artifactCode.isBlank()) {
             return FleetShipActionResponse.fail(gameId, code, "인공물 코드가 필요합니다");
         }
 
-        // ARTIFACT_13: 연방 토큰 보상 1회 받기
+        // ARTIFACT_13: 파워 6 소각 + 인공물 획득 + 연방 토큰 보상 재사용
         if ("ARTIFACT_13".equals(artifactCode) && federationTileCode != null && !federationTileCode.isBlank()) {
-            // 파워 6 소각
-            artifactService.acquireArtifact(gameId, playerId, artifactCode);
+            // 인공물 획득 직접 처리 (acquireArtifact의 @Transactional rollback 전파 회피)
+            if (!playerArtifactRepository.existsByGameIdAndPlayerIdAndArtifactType(gameId, playerId, "ARTIFACT_13")) {
+                // 파워 6 영구 제거
+                int rem = 6;
+                int f1 = Math.min(ps.getPowerBowl1(), rem); ps.removePowerFromBowl1(f1); rem -= f1;
+                if (rem > 0) { int f2 = Math.min(ps.getPowerBowl2(), rem); ps.removePowerFromBowl2(f2); rem -= f2; }
+                if (rem > 0) { ps.removePowerFromBowl3(rem); }
+                // 오퍼 점유
+                var offer = artifactOfferRepository.findByGameIdAndArtifactType(gameId, com.gaiaproject.domain.enumtype.artifact.ArtifactType.ARTIFACT_13).orElse(null);
+                if (offer != null) { offer.acquire(playerId); artifactOfferRepository.save(offer); }
+                // 플레이어 인공물 기록
+                playerArtifactRepository.save(com.gaiaproject.domain.entity.player.GamePlayerArtifact.builder()
+                        .gameId(gameId).playerId(playerId).artifactType("ARTIFACT_13").build());
+                playerStateRepository.save(ps);
+            }
             // 연방 토큰 보상 적용
             FederationTileType tileType;
             try { tileType = FederationTileType.valueOf(federationTileCode); }
@@ -461,6 +512,20 @@ public class FleetShipActionService {
             ps.applyIncome(reward);
             if (reward.vp() > 0) vpLogService.logVp(gameId, playerId, VpCategory.ARTIFACT, reward.vp(), null, "ARTIFACT_13 연방토큰 보상: " + federationTileCode);
             playerStateRepository.save(ps);
+
+            // FED_EXP_TILE_1: 기술타일 획득
+            // FE 파라미터: trackCode=기술타일코드, techTrackCode=트랙코드, coveredTileCode=커버타일코드
+            String techTileCodeForFed = originalTrackCode; // FE trackCode 자리에 기술타일 코드
+            if (techTileCodeForFed != null && techTileCodeForFed.equals("ARTIFACT_13")) techTileCodeForFed = null;
+            if ("FED_EXP_TILE_1".equals(federationTileCode)
+                    && techTileCodeForFed != null && !techTileCodeForFed.isBlank()) {
+                var game = gameRepository.findById(gameId).orElse(null);
+                if (game != null) {
+                    techTileService.acquireTileForBuilding(gameId, playerId, techTileCodeForFed,
+                            techTrackCode, game.getEconomyTrackOption(), coveredTileCode);
+                }
+            }
+
             String actionData = String.format("{\"actionCode\":\"%s\",\"artifactCode\":\"%s\"}", code, artifactCode);
             ConfirmActionResponse result = actionService.saveActionAndNextTurn(gameId, playerId, ActionType.FLEET_SHIP_ACTION, actionData);
             log.info("[함대] {}: game={}, player={}, artifact={}, fedToken={}", code, gameId, playerId, artifactCode, federationTileCode);

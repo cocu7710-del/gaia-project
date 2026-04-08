@@ -478,11 +478,22 @@ public class FederationFormService {
         Set<String> allHexes = new HashSet<>();
         for (int[] h : buildingHexes) allHexes.add(h[0] + "," + h[1]);
         for (int[] h : tokenHexes) allHexes.add(h[0] + "," + h[1]);
+        // 하이브: 기존 연방 건물/토큰도 연결 대상에 포함
+        if (isIvits) {
+            List<GameFederationGroup> existingFedGroups = federationGroupRepository.findByGameIdAndPlayerId(gameId, playerId);
+            if (!existingFedGroups.isEmpty()) {
+                GameFederationGroup eg = existingFedGroups.get(0);
+                federationBuildingRepository.findByFederationGroupId(eg.getId())
+                        .forEach(b -> allHexes.add(b.getHexQ() + "," + b.getHexR()));
+                federationTokenHexRepository.findByFederationGroupId(eg.getId())
+                        .forEach(t -> allHexes.add(t.getHexQ() + "," + t.getHexR()));
+            }
+        }
         if (!isConnected(allHexes)) {
             return FormFederationResponse.fail(gameId, "건물과 토큰이 연결되어 있지 않습니다");
         }
 
-        // 파워 값 (BASIC_TILE_9 반���)
+        // 파워 값 (BASIC_TILE_9 반영)
         int totalPowerValue = selectedBuildings.stream().mapToInt(b -> buildingPowerValue(b.getBuildingType(), gameId, playerId, b.isHasRing())).sum();
         // 매안 PI: 본인 행성(TITANIUM) 건물 파워값 +1
         if (ps.getFactionType() == FactionType.BESCODS && ps.getStockPlanetaryInstitute() == 0) {
@@ -922,7 +933,7 @@ public class FederationFormService {
 
     private int buildingPowerValue(BuildingType type) {
         return switch (type) {
-            case MINE -> 1;
+            case MINE, LOST_PLANET_MINE -> 1;
             case TRADING_STATION, RESEARCH_LAB -> 2;
             case PLANETARY_INSTITUTE, ACADEMY -> 3;
             case SPACE_STATION -> 1;

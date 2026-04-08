@@ -12,5 +12,6 @@ public record FleetShipActionRequest(
         String coveredTileCode, // 고급 타일 획득 시 덮을 기본 타일 코드 (nullable)
         Integer qicUsed,        // 거리 확장에 사용한 QIC 수 (nullable)
         Boolean splitAction,    // true: 후속 광산 건설이 있어 턴을 넘기지 않음 (nullable)
-        String federationTileCode // TWILIGHT_FED: 재사용할 연방 토큰 코드 (nullable)
+        String federationTileCode, // TWILIGHT_FED: 재사용할 연방 토큰 코드 (nullable)
+        Boolean useBrainstone    // 타클론: 브레인스톤 사용 여부 (nullable)
 ) {}

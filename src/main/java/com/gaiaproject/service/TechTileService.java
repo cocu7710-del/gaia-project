@@ -8,6 +8,7 @@ import com.gaiaproject.domain.entity.tech.GameAdvTechOffer;
 import com.gaiaproject.domain.entity.tech.GameTechOffer;
 import com.gaiaproject.domain.enumtype.action.ActionType;
 import com.gaiaproject.domain.enumtype.building.BuildingType;
+import com.gaiaproject.domain.enumtype.player.PlanetType;
 import com.gaiaproject.domain.enumtype.player.FactionType;
 import com.gaiaproject.domain.enumtype.action.VpCategory;
 import com.gaiaproject.domain.enumtype.rounds.RoundScoringEvent;
@@ -62,6 +63,7 @@ public class TechTileService {
     private final com.gaiaproject.repository.player.GamePlayerFleetProbeRepository fleetProbeRepository;
     private final GameWebSocketService webSocketService;
     private final VpLogService vpLogService;
+    private final com.gaiaproject.repository.player.GamePlayerArtifactRepository playerArtifactRepository;
 
     /** 지식 트랙 전진 (지식 4 소모, PLAYING 페이즈) */
     public AdvanceTechResponse advanceTechTrack(UUID gameId, AdvanceTechRequest request) {
@@ -123,6 +125,15 @@ public class TechTileService {
         log.info("기술 트랙 전진: game={}, player={}, track={}, newLevel={}", gameId, request.playerId(), request.trackCode(), newLevel);
 
         String actionData = String.format("{\"trackCode\":\"%s\",\"newLevel\":%d}", request.trackCode(), newLevel);
+
+        // NAVIGATION 4→5: 검은행성 배치 대기 (턴 넘기지 않음)
+        if ("NAVIGATION".equals(request.trackCode()) && newLevel == 5) {
+            actionService.saveActionOnly(gameId, request.playerId(), ActionType.ADVANCE_TECH, actionData);
+            webSocketService.broadcastDeferredActionRequired(gameId, request.playerId(),
+                    "PLACE_LOST_PLANET", String.format("{\"triggerPlayerId\":\"%s\"}", request.playerId()));
+            return AdvanceTechResponse.success(gameId, request.trackCode(), newLevel, 0);
+        }
+
         ConfirmActionResponse actionResult = actionService.saveActionAndNextTurn(gameId, request.playerId(), ActionType.ADVANCE_TECH, actionData);
 
         return AdvanceTechResponse.success(gameId, request.trackCode(), newLevel,
@@ -375,11 +386,11 @@ public class TechTileService {
         int vp = 0;
         switch (effect) {
             case "VP_PER_SECTOR_BUILDING" -> {
-                long count = countBuildingsInSectors(gameId, playerId);
+                long count = countSectorsWithBuildings(gameId, playerId);
                 vp = (int) count * 2;
             }
             case "ORE_PER_SECTOR_BUILDING" -> {
-                long count = countBuildingsInSectors(gameId, playerId);
+                long count = countSectorsWithBuildings(gameId, playerId);
                 ps.addOre((int) count);
             }
             case "VP_PER_MINE" -> {
@@ -395,6 +406,7 @@ public class TechTileService {
             }
             case "VP_PER_GAIA_PLANET" -> {
                 long gaiaCount = gameBuildingRepository.findByGameIdAndPlayerId(gameId, playerId).stream()
+                        .filter(b -> b.getBuildingType() != BuildingType.GAIAFORMER && !b.isLantidsMine())
                         .filter(b -> {
                             var hex = gameHexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR());
                             return hex.isPresent() && "GAIA".equals(hex.get().getPlanetType());
@@ -406,12 +418,18 @@ public class TechTileService {
                 vp = bigBuildings * 6;
             }
             case "PER_LOST_PLANET_VP4" -> {
-                long lostCount = gameBuildingRepository.findByGameIdAndPlayerId(gameId, playerId).stream()
-                        .filter(b -> {
-                            var hex = gameHexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR());
-                            return hex.isPresent() && "LOST_PLANET".equals(hex.get().getPlanetType());
-                        }).count();
-                vp = (int) lostCount * 4;
+                // 건물 있는 깊은 구역(DEEP_ 섹터) 수당 4VP
+                Set<String> deepSectors = new HashSet<>();
+                for (var b : gameBuildingRepository.findByGameIdAndPlayerId(gameId, playerId)) {
+                    if (b.getBuildingType() == BuildingType.GAIAFORMER || b.isLantidsMine()) continue;
+                    gameHexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR())
+                            .ifPresent(h -> {
+                                if (h.getSectorId() != null && h.getSectorId().startsWith("DEEP_")) {
+                                    deepSectors.add(h.getSectorId());
+                                }
+                            });
+                }
+                vp = deepSectors.size() * 4;
             }
         }
 
@@ -438,13 +456,19 @@ public class TechTileService {
         };
     }
 
-    /** 섹터 구역 건물 수 카운트 */
-    private long countBuildingsInSectors(UUID gameId, UUID playerId) {
-        return gameBuildingRepository.findByGameIdAndPlayerId(gameId, playerId).stream()
-                .filter(b -> {
-                    var hex = gameHexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR());
-                    return hex.isPresent() && hex.get().getSectorId() != null;
-                }).count();
+    /** 건물이 있는 일반 섹터 수 카운트 (DEEP_ 제외) */
+    private long countSectorsWithBuildings(UUID gameId, UUID playerId) {
+        Set<String> sectors = new HashSet<>();
+        for (var b : gameBuildingRepository.findByGameIdAndPlayerId(gameId, playerId)) {
+            if (b.getBuildingType() == BuildingType.GAIAFORMER || b.isLantidsMine()) continue;
+            gameHexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR())
+                    .ifPresent(h -> {
+                        if (h.getSectorId() != null && !h.getSectorId().startsWith("DEEP_")) {
+                            sectors.add(h.getSectorId());
+                        }
+                    });
+        }
+        return sectors.size();
     }
 
     /**
@@ -457,6 +481,9 @@ public class TechTileService {
         if (specialEffect == null) {
             // 특수 효과 없으면 일반 자원 적용 (QIC, 광석, 크레딧, VP 등)
             ability.applyTo(ps);
+            if (ability.getVpGain() != null && ability.getVpGain() > 0) {
+                vpLogService.logVp(gameId, playerId, VpCategory.TECH_TILE, ability.getVpGain(), null, tileCode + " 즉시 VP");
+            }
             log.info("[TILE_IMMEDIATE] 자원 즉발 적용: {}", tileCode);
             return;
         }
@@ -474,9 +501,12 @@ public class TechTileService {
                     gameHexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR())
                             .map(GameHex::getPlanetType)
                             .ifPresent(pt -> {
-                                if (pt != null) planetTypes.add(pt.name());
+                                if (pt != null && pt != PlanetType.EMPTY && pt != PlanetType.TRANSDIM) planetTypes.add(pt.name());
                             });
                 }
+                // 인공물 가상 행성 종류
+                if (playerArtifactRepository.existsByGameIdAndPlayerIdAndArtifactType(gameId, playerId, "ARTIFACT_7")) planetTypes.add("ASTEROIDS");
+                if (playerArtifactRepository.existsByGameIdAndPlayerIdAndArtifactType(gameId, playerId, "ARTIFACT_8")) planetTypes.add("LOST_PLANET");
                 ps.addKnowledge(planetTypes.size());
                 log.info("[TILE_IMMEDIATE] KNOWLEDGE_PER_PLANET_TYPE: 행성 종류={}, 지식+={}", planetTypes.size(), planetTypes.size());
             }
@@ -495,6 +525,7 @@ public class TechTileService {
             }
             case "VP_PER_GAIA_PLANET" -> {
                 long gaiaCount = gameBuildingRepository.findByGameIdAndPlayerId(gameId, playerId).stream()
+                        .filter(b -> b.getBuildingType() != BuildingType.GAIAFORMER && !b.isLantidsMine())
                         .filter(b -> {
                             var hex = gameHexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR()).orElse(null);
                             return hex != null && hex.getPlanetType() == com.gaiaproject.domain.enumtype.player.PlanetType.GAIA;
@@ -507,10 +538,15 @@ public class TechTileService {
                 log.info("[TILE_IMMEDIATE] VP_PER_GAIA_PLANET: gaia={}, vp={}", gaiaCount, vp);
             }
             case "VP_PER_SECTOR_BUILDING" -> {
-                Set<Integer> sectors = new HashSet<>();
+                Set<String> sectors = new HashSet<>();
                 for (var b : gameBuildingRepository.findByGameIdAndPlayerId(gameId, playerId)) {
+                    if (b.getBuildingType() == BuildingType.GAIAFORMER || b.isLantidsMine()) continue;
                     gameHexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR())
-                            .ifPresent(h -> { if (h.getPositionNo() != null) sectors.add(h.getPositionNo()); });
+                            .ifPresent(h -> {
+                                if (h.getSectorId() != null && !h.getSectorId().startsWith("DEEP_")) {
+                                    sectors.add(h.getSectorId());
+                                }
+                            });
                 }
                 int vp = sectors.size() * 2;
                 if (vp > 0) {
@@ -788,7 +824,35 @@ public class TechTileService {
                             com.gaiaproject.domain.enumtype.rounds.RoundScoringEvent.FEDERATION_FORMED, 1);
                 }
             }
-            log.info("[TECH_LV5] 연방 토큰 뒤집기 완료: player={}, track={}", ps.getPlayerId(), trackCode);
+            // 5단계 즉시 보상 (연방 토큰 뒤집기 이후)
+            switch (trackCode) {
+                case "AI" -> ps.addQic(4);
+                case "GAIA_FORMING" -> {
+                    // 가이아 5단계: 가이아 땅 갯수당 1VP + 4VP
+                    long gaiaCount = gameBuildingRepository.findByGameIdAndPlayerId(ps.getGameId(), ps.getPlayerId()).stream()
+                            .filter(b -> b.getBuildingType() != BuildingType.GAIAFORMER && !b.isLantidsMine())
+                            .filter(b -> {
+                                var hex = gameHexRepository.findByGameIdAndHexQAndHexR(ps.getGameId(), b.getHexQ(), b.getHexR()).orElse(null);
+                                return hex != null && hex.getPlanetType() == com.gaiaproject.domain.enumtype.player.PlanetType.GAIA;
+                            }).count();
+                    int gaiaVp = (int) gaiaCount + 4;
+                    ps.addVP(gaiaVp);
+                    vpLogService.logVp(ps.getGameId(), ps.getPlayerId(), VpCategory.TECH_TILE, gaiaVp, null, "가이아 5단계: 가이아 땅 " + gaiaCount + "개 + 4VP");
+                    log.info("[TECH_LV5_GAIA] 가이아 땅 {}개 × 1VP + 4VP = {}VP", gaiaCount, gaiaVp);
+                }
+                case "ECONOMY" -> {
+                    // 경제 5단계: 수입 사라지고 즉시 6크레딧 + 3광석 + 6파워순환
+                    ps.addCredit(6);
+                    ps.addOre(3);
+                    ps.chargePowerWithFactionRules(6);
+                }
+                case "SCIENCE" -> {
+                    // 지식 5단계: 수입 사라지고 즉시 9지식
+                    ps.addKnowledge(9);
+                }
+                default -> {} // TERRA_FORMING은 연방 타일 위에서 처리, NAVIGATION은 검은행성(별도)
+            }
+            log.info("[TECH_LV5] 연방 토큰 뒤집기 + 5단계 보상 완료: player={}, track={}", ps.getPlayerId(), trackCode);
             return;
         }
         if (newLevel < 1 || newLevel > 4) return;
@@ -851,8 +915,10 @@ public class TechTileService {
      * @return true if flipped, false if no usable token
      */
     public boolean flipUsableFederationToken(UUID gameId, UUID playerId) {
+        log.info("[FED_FLIP] 시도: player={}", playerId);
         // 1. 연방 그룹에서 사용 가능한 토큰 찾기
         var groups = federationGroupRepository.findByGameIdAndPlayerId(gameId, playerId);
+        log.info("[FED_FLIP] 그룹 수: {}", groups.size());
         for (var g : groups) {
             if (!g.isUsed()) {
                 try {
@@ -869,7 +935,9 @@ public class TechTileService {
 
         // 2. 직접 보유 토큰에서 사용 가능한 것 찾기 (글린 PI 등)
         var tokens = playerFederationTokenRepository.findByGameIdAndPlayerId(gameId, playerId);
+        log.info("[FED_FLIP] 직접 보유 토큰 수: {}", tokens.size());
         for (var t : tokens) {
+            log.info("[FED_FLIP] 토큰: type={}, used={}, useFed={}", t.getFederationTileType(), t.isUsed(), t.getFederationTileType().isUseFederation());
             if (!t.isUsed() && t.getFederationTileType().isUseFederation()) {
                 t.markUsed();
                 playerFederationTokenRepository.save(t);
@@ -878,6 +946,7 @@ public class TechTileService {
             }
         }
 
+        log.warn("[FED_FLIP] 실패: 사용 가능한 토큰 없음. player={}", playerId);
         return false;
     }
 

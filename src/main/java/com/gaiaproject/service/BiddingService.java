@@ -28,11 +28,13 @@ public class BiddingService {
     private final PlayerRepository playerRepository;
     private final GameWebSocketService webSocketService;
     private final GameService gameService;
+    private final VpLogService vpLogService;
 
     public BiddingService(GameRepository gameRepository, GameBidRepository gameBidRepository,
                           GameParticipantRepository gameParticipantRepository, GameSeatRepository gameSeatRepository,
                           GamePlayerStateRepository playerStateRepository, PlayerRepository playerRepository,
-                          GameWebSocketService webSocketService, @Lazy GameService gameService) {
+                          GameWebSocketService webSocketService, @Lazy GameService gameService,
+                          VpLogService vpLogService) {
         this.gameRepository = gameRepository;
         this.gameBidRepository = gameBidRepository;
         this.gameParticipantRepository = gameParticipantRepository;
@@ -41,6 +43,7 @@ public class BiddingService {
         this.playerRepository = playerRepository;
         this.webSocketService = webSocketService;
         this.gameService = gameService;
+        this.vpLogService = vpLogService;
     }
 
     /**
@@ -170,6 +173,11 @@ public class BiddingService {
         GameBid bid = gameBidRepository.findByGameIdAndPlayerId(gameId, playerId).orElseThrow();
         playerState.setBidPenalty(bid.getBidAmount());
         playerStateRepository.save(playerState);
+        // 기본 시작 VP 로그
+        if (playerState.getVictoryPoints() > 0) {
+            vpLogService.logVp(gameId, playerId, com.gaiaproject.domain.enumtype.action.VpCategory.BASE,
+                    playerState.getVictoryPoints(), null, "기본 시작 VP");
+        }
         List<GameBid> alreadyPicked = gameBidRepository.findByGameIdAndPickOrderIsNotNullOrderByPickOrderAsc(gameId);
         bid.setPickOrder(alreadyPicked.size() + 1);
         bid.setSeatNo(seatNo);

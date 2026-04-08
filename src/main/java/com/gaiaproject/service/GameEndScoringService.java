@@ -37,6 +37,9 @@ public class GameEndScoringService {
     private final GameFederationGroupRepository federationGroupRepository;
     private final GameFederationBuildingRepository federationBuildingRepository;
     private final VpLogService vpLogService;
+    private final com.gaiaproject.repository.player.GamePlayerFederationTokenRepository playerFederationTokenRepository;
+    private final com.gaiaproject.repository.federation.GameFederationTokenHexRepository federationTokenHexRepository;
+    private final com.gaiaproject.repository.player.GamePlayerArtifactRepository playerArtifactRepository;
 
     /**
      * 게임 종료 시 최종 점수 계산 (최종 미션 + 남은 자원 + 지식트랙)
@@ -178,7 +181,13 @@ public class GameEndScoringService {
                         GameHex hex = hexByCoord.get(b.getHexQ() + "," + b.getHexR());
                         return hex != null && hex.getPlanetType() == PlanetType.GAIA;
                     }).count();
-            case "FINAL_TILE_MOST_BUILDINGS" -> myBuildings.size();
+            case "FINAL_TILE_MOST_BUILDINGS" -> {
+                int count = myBuildings.size();
+                // 인공물 가상 건물 +1
+                if (playerArtifactRepository.existsByGameIdAndPlayerIdAndArtifactType(gameId, playerId, "ARTIFACT_7")) count++;
+                if (playerArtifactRepository.existsByGameIdAndPlayerIdAndArtifactType(gameId, playerId, "ARTIFACT_8")) count++;
+                yield count;
+            }
             case "FINAL_TILE_FEDERATION_BUILDINGS" -> {
                 var groups = federationGroupRepository.findByGameIdAndPlayerId(gameId, playerId);
                 if (groups.isEmpty()) yield 0;
@@ -198,9 +207,17 @@ public class GameEndScoringService {
                         .map(GameHex::getPlanetType)
                         .filter(p -> p != PlanetType.EMPTY && p != PlanetType.TRANSDIM)
                         .collect(Collectors.toSet());
+                // 인공물 가상 행성 종류
+                if (playerArtifactRepository.existsByGameIdAndPlayerIdAndArtifactType(gameId, playerId, "ARTIFACT_7")) types.add(PlanetType.ASTEROIDS);
+                if (playerArtifactRepository.existsByGameIdAndPlayerIdAndArtifactType(gameId, playerId, "ARTIFACT_8")) types.add(PlanetType.LOST_PLANET);
                 yield types.size();
             }
-            case "FINAL_TILE_FEDERATION_POWER" -> federationGroupRepository.findByGameIdAndPlayerId(gameId, playerId).size();
+            case "FINAL_TILE_FEDERATION_POWER" -> {
+                var fedGroups = federationGroupRepository.findByGameIdAndPlayerId(gameId, playerId);
+                int satCount = 0;
+                for (var g : fedGroups) satCount += federationTokenHexRepository.findByFederationGroupId(g.getId()).size();
+                yield satCount;
+            }
             case "FINAL_TILE_PI_ACADEMY_DISTANCE" -> {
                 GameBuilding pi = myBuildings.stream()
                         .filter(b -> b.getBuildingType() == BuildingType.PLANETARY_INSTITUTE).findFirst().orElse(null);

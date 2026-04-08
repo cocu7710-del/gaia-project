@@ -193,8 +193,9 @@ public class GaiaformingService {
     public void returnAllGaiaPower(UUID gameId) {
         List<GamePlayerState> players = playerStateRepository.findByGameId(gameId);
         for (GamePlayerState player : players) {
-            if (player.getGaiaPower() > 0) {
-                // factionType null일 경우 seat에서 조회하여 설정 (테란 bowl2 복귀 판단용)
+            boolean hasGaia = player.getGaiaPower() > 0;
+            boolean hasBrainstoneInGaia = player.getBrainstoneBowl() != null && player.getBrainstoneBowl() == 0;
+            if (hasGaia || hasBrainstoneInGaia) {
                 if (player.getFactionType() == null) {
                     gameSeatRepository.findByGameIdAndSeatNo(gameId, player.getSeatNo())
                         .ifPresent(s -> player.setFactionType(s.getFactionType()));
@@ -210,7 +211,9 @@ public class GaiaformingService {
     public void returnGaiaPowerExcept(UUID gameId, UUID excludePlayerId) {
         List<GamePlayerState> players = playerStateRepository.findByGameId(gameId);
         for (GamePlayerState player : players) {
-            if (player.getGaiaPower() > 0 && !player.getPlayerId().equals(excludePlayerId)) {
+            boolean hasGaia = player.getGaiaPower() > 0;
+            boolean hasBrainstoneInGaia = player.getBrainstoneBowl() != null && player.getBrainstoneBowl() == 0;
+            if ((hasGaia || hasBrainstoneInGaia) && !player.getPlayerId().equals(excludePlayerId)) {
                 if (player.getFactionType() == null) {
                     gameSeatRepository.findByGameIdAndSeatNo(gameId, player.getSeatNo())
                         .ifPresent(s -> player.setFactionType(s.getFactionType()));
@@ -224,7 +227,9 @@ public class GaiaformingService {
     /** 특정 플레이어 잔여 가이아 파워 복귀 */
     public void returnGaiaPowerForPlayer(UUID gameId, UUID playerId) {
         GamePlayerState ps = playerStateRepository.findByGameIdAndPlayerId(gameId, playerId).orElse(null);
-        if (ps != null && ps.getGaiaPower() > 0) {
+        boolean hasGaia = ps != null && ps.getGaiaPower() > 0;
+        boolean hasBs = ps != null && ps.getBrainstoneBowl() != null && ps.getBrainstoneBowl() == 0;
+        if (ps != null && (hasGaia || hasBs)) {
             ps.returnGaiaPower();
             playerStateRepository.save(ps);
             log.info("아이타 잔여 가이아 복귀: game={}, player={}", gameId, playerId);

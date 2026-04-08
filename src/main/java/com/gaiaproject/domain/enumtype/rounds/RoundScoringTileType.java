@@ -17,8 +17,8 @@ public enum RoundScoringTileType {
     ROUND_TILE_MINE("광산 건설 시 2VP"),
     ROUND_TILE_TRADING_STATION_3("교역소 건설 시 3VP"),
     ROUND_TILE_TRADING_STATION_4("교역소 건설 시 4VP"),
-    ROUND_TILE_PLANETARY_INSTITUTE("행성 연구소 건설 시 4VP"),
-    ROUND_TILE_ACADEMY("의회 또는 아카데미 건설 시 5VP"),
+    ROUND_TILE_PLANETARY_INSTITUTE("연구소 건설 시 4VP"),
+    ROUND_TILE_ACADEMY("행성 의회 또는 아카데미 건설 시 5VP"),
     ROUND_TILE_GAIA_PLANET_3("가이아 행성 개척 시 3VP"),
     ROUND_TILE_GAIA_PLANET_4("가이아 행성 개척 시 4VP"),
     ROUND_TILE_TERRAFORM("테라포밍 1단계당 2VP"),
@@ -41,7 +41,7 @@ public enum RoundScoringTileType {
             case ROUND_TILE_MINE                -> event == RoundScoringEvent.MINE_PLACED ? 2 : 0;
             case ROUND_TILE_TRADING_STATION_3   -> event == RoundScoringEvent.TRADING_STATION_BUILT ? 3 : 0;
             case ROUND_TILE_TRADING_STATION_4   -> event == RoundScoringEvent.TRADING_STATION_BUILT ? 4 : 0;
-            case ROUND_TILE_PLANETARY_INSTITUTE -> event == RoundScoringEvent.PLANETARY_INSTITUTE_BUILT ? 4 : 0;
+            case ROUND_TILE_PLANETARY_INSTITUTE -> event == RoundScoringEvent.RESEARCH_LAB_BUILT ? 4 : 0;
             case ROUND_TILE_ACADEMY             -> (event == RoundScoringEvent.ACADEMY_BUILT
                                                     || event == RoundScoringEvent.PLANETARY_INSTITUTE_BUILT) ? 5 : 0;
             case ROUND_TILE_GAIA_PLANET_3       -> event == RoundScoringEvent.GAIA_PLANET_COLONIZED ? 3 : 0;

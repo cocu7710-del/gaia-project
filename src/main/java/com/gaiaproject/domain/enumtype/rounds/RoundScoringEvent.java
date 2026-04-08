@@ -6,6 +6,7 @@ package com.gaiaproject.domain.enumtype.rounds;
 public enum RoundScoringEvent {
     MINE_PLACED,
     TRADING_STATION_BUILT,
+    RESEARCH_LAB_BUILT,
     PLANETARY_INSTITUTE_BUILT,
     ACADEMY_BUILT,
     GAIA_PLANET_COLONIZED,

@@ -57,6 +57,7 @@ public class PassService {
     private final ActionService actionService;
     private final com.gaiaproject.repository.tech.GamePlayerTechTileRepository playerTechTileRepository;
     private final com.gaiaproject.repository.player.GamePlayerFederationTokenRepository federationTokenRepository;
+    private final com.gaiaproject.repository.player.GamePlayerArtifactRepository playerArtifactRepository;
 
     /**
      * 라운드 패스 (다음 라운드 부스터 선택 포함)
@@ -114,7 +115,19 @@ public class PassService {
                         String effect = advCode.getAbility().getSpecialEffect();
                         if (effect == null) continue;
                         int vp = switch (effect) {
-                            case "VP_PER_LOST_PLANET_PASS" -> ctx.deepSectorStructures() * 2;
+                            case "VP_PER_LOST_PLANET_PASS" -> {
+                                // 건물이 있는 깊은 구역 섹터 수 (건물 수가 아님)
+                                var deepBuildings = buildingRepository.findByGameIdAndPlayerId(gameId, playerId);
+                                java.util.Set<String> deepSectors = new java.util.HashSet<>();
+                                for (var b : deepBuildings) {
+                                    hexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR()).ifPresent(h -> {
+                                        if (h.getSectorId() != null && h.getSectorId().startsWith("DEEP_SECTOR")) {
+                                            deepSectors.add(h.getSectorId());
+                                        }
+                                    });
+                                }
+                                yield deepSectors.size() * 2;
+                            }
                             case "VP_PER_ASTEROID_SECTOR_PASS" -> {
                                 // 소행성 구역 수 (sectorId 기반)
                                 var buildings = buildingRepository.findByGameIdAndPlayerId(gameId, playerId);
@@ -323,28 +336,40 @@ public class PassService {
         int convertedGf = gfState != null ? gfState.getBaltaksConvertedGaiaformers() : 0;
         int gaiaformers      = stockGf + gaiaformersOnMap + convertedGf; // 소각하지 않은 포머 = 재고 + 맵 배치 + 발타크 변환
 
-        // 건물이 있는 헥스 조회하여 행성 타입 분석
+        // 건물이 있는 헥스 일괄 조회 (N+1 → 1 쿼리)
+        List<GameHex> allHexes = hexRepository.findByGameId(gameId);
+        java.util.Map<String, GameHex> hexLookup = new java.util.HashMap<>();
+        for (GameHex hex : allHexes) {
+            hexLookup.put(hex.getHexQ() + "," + hex.getHexR(), hex);
+        }
+
         java.util.Map<String, PlanetType> hexPlanetMap = new java.util.HashMap<>();
         for (GameBuilding b : buildings) {
             String key = b.getHexQ() + "," + b.getHexR();
             if (!hexPlanetMap.containsKey(key)) {
-                hexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR())
-                        .ifPresent(hex -> hexPlanetMap.put(key, hex.getPlanetType()));
+                GameHex hex = hexLookup.get(key);
+                if (hex != null) hexPlanetMap.put(key, hex.getPlanetType());
             }
         }
 
         int gaiaPlanets = (int) hexPlanetMap.values().stream().filter(p -> p == PlanetType.GAIA).count();
         // 딥섹터 건물 수 (LOST_PLANET뿐 아니라 딥섹터 내 모든 건물)
         int deepStructures = (int) buildings.stream().filter(b -> {
-            var hex = hexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR()).orElse(null);
+            GameHex hex = hexLookup.get(b.getHexQ() + "," + b.getHexR());
             return hex != null && hex.getSectorId() != null && hex.getSectorId().startsWith("DEEP_SECTOR");
         }).count();
         long colonizedKinds = hexPlanetMap.values().stream()
                 .filter(p -> p != PlanetType.EMPTY && p != PlanetType.TRANSDIM && p != PlanetType.GAIA)
                 .distinct().count();
 
-        // 가이아 행성도 종류에 포함 (게임 규칙에 따라 조정 가능)
+        // 가이아 행성도 종류에 포함
         if (gaiaPlanets > 0) colonizedKinds++;
+        // 인공물 가상 행성 종류
+        java.util.Set<PlanetType> kindSet = hexPlanetMap.values().stream()
+                .filter(p -> p != PlanetType.EMPTY && p != PlanetType.TRANSDIM)
+                .collect(java.util.stream.Collectors.toSet());
+        if (playerArtifactRepository.existsByGameIdAndPlayerIdAndArtifactType(gameId, playerId, "ARTIFACT_7") && !kindSet.contains(PlanetType.ASTEROIDS)) colonizedKinds++;
+        if (playerArtifactRepository.existsByGameIdAndPlayerIdAndArtifactType(gameId, playerId, "ARTIFACT_8") && !kindSet.contains(PlanetType.LOST_PLANET)) colonizedKinds++;
 
         return new PassContextVo(mines, tradingStations, researchLabs, academies, planetaryInsts,
                 gaiaPlanets, gaiaformers, deepStructures, (int) colonizedKinds);

@@ -315,7 +315,8 @@ public class BuildingService {
         try {
             String error = upgradeCore(game, request.playerId(), building, targetType,
                     request.academyType(), request.techTileCode(), request.techTrackCode(), request.coveredTileCode(),
-                    ActionType.UPGRADE_BUILDING, actionData, true);
+                    ActionType.UPGRADE_BUILDING, actionData, true,
+                    request.lostPlanetHexQ(), request.lostPlanetHexR());
             if (error != null) return UpgradeBuildingResponse.fail(gameId, error);
         } catch (IllegalStateException e) {
             return UpgradeBuildingResponse.fail(gameId, e.getMessage());
@@ -444,6 +445,26 @@ public class BuildingService {
             log.info("[PASSIVE TILE_8] 가이아 구역 광산 VP +3: player={}", request.playerId());
         }
 
+        // PASSIVE: ADV_TILE_10 - 테라포밍 1삽당 2VP
+        if (!isLantidsMine && !isGaiaformerReturn && hex.getPlanetType() != PlanetType.GAIA && !request.gaiaformerUsed()) {
+            if (hasActiveTechTile(gameId, request.playerId(), "ADV_TILE_10")) {
+                int steps = calcRawTerraformingSteps(playerState.getFactionType(), hex.getPlanetType());
+                if (steps > 0) {
+                    int advVp = steps * 2;
+                    playerState.addVP(advVp);
+                    vpLogService.logVp(gameId, request.playerId(), VpCategory.ADV_TECH_TILE, advVp, null, "ADV_TILE_10 테라포밍 " + steps + "삽 × 2VP");
+                    log.info("[PASSIVE ADV_10] 테라포밍 {}삽 × 2VP = {}VP: player={}", steps, advVp, request.playerId());
+                }
+            }
+        }
+
+        // PASSIVE: ADV_TILE_16 - 광산 건설 시 3VP
+        if (hasActiveTechTile(gameId, request.playerId(), "ADV_TILE_16")) {
+            playerState.addVP(3);
+            vpLogService.logVp(gameId, request.playerId(), VpCategory.ADV_TECH_TILE, 3, null, "ADV_TILE_16 광산 건설 3VP");
+            log.info("[PASSIVE ADV_16] 광산 건설 3VP: player={}", request.playerId());
+        }
+
         // 글린 고유 능력: 가이아 행성 광산 건설 시 VP +2
         if (hex.getPlanetType() == PlanetType.GAIA
                 && playerState.getFactionType() == FactionType.GLEENS) {
@@ -530,7 +551,13 @@ public class BuildingService {
 
         // 파워 리치 처리 (자동/수동 결정 포함, 턴 진행까지 담당)
         List<GameBuilding> allBuildings = gameBuildingRepository.findByGameId(gameId);
-        powerLeechService.createBatchAndProcess(game, request.playerId(), request.hexQ(), request.hexR(), BuildingType.MINE, allBuildings, null, null);
+        if (request.hasFollowUp()) {
+            // 후속 액션 있음 → 리치 해소 후 DEFERRED (턴 안 넘김)
+            String followUpData = String.format("{\"triggerPlayerId\":\"%s\"}", request.playerId());
+            powerLeechService.createBatchAndProcess(game, request.playerId(), request.hexQ(), request.hexR(), BuildingType.MINE, allBuildings, "PLACE_LOST_PLANET", followUpData);
+        } else {
+            powerLeechService.createBatchAndProcess(game, request.playerId(), request.hexQ(), request.hexR(), BuildingType.MINE, allBuildings, null, null);
+        }
 
         return PlaceMinePlayResponse.success(gameId, request.hexQ(), request.hexR(), 0);
     }
@@ -557,7 +584,8 @@ public class BuildingService {
             Game game, UUID playerId, GameBuilding building,
             BuildingType targetType, String academyType,
             String techTileCode, String techTrackCode, String coveredTileCode,
-            ActionType actionType, String actionData, boolean awardRoundScoring) {
+            ActionType actionType, String actionData, boolean awardRoundScoring,
+            Integer lostPlanetHexQ, Integer lostPlanetHexR) {
 
         UUID gameId = game.getId();
         BuildingType fromType = building.getBuildingType();
@@ -600,11 +628,19 @@ public class BuildingService {
 
         log.info("건물 업그레이드: game={}, player={}, ({},{}) {}→{}", gameId, playerId, building.getHexQ(), building.getHexR(), fromType, targetType);
 
+        // PASSIVE: ADV_TILE_17 - 교역소 건설 시 3VP
+        if (targetType == BuildingType.TRADING_STATION && hasActiveTechTile(gameId, playerId, "ADV_TILE_17")) {
+            playerState.addVP(3);
+            vpLogService.logVp(gameId, playerId, VpCategory.ADV_TECH_TILE, 3, null, "ADV_TILE_17 교역소 건설 3VP");
+            gamePlayerStateRepository.save(playerState);
+        }
+
         // 라운드 점수 타일 적용
         if (awardRoundScoring && game.getCurrentRound() != null) {
             int round = game.getCurrentRound();
             switch (targetType) {
                 case TRADING_STATION -> roundScoringService.award(gameId, round, playerState, RoundScoringEvent.TRADING_STATION_BUILT, 1);
+                case RESEARCH_LAB -> roundScoringService.award(gameId, round, playerState, RoundScoringEvent.RESEARCH_LAB_BUILT, 1);
                 case PLANETARY_INSTITUTE -> roundScoringService.award(gameId, round, playerState, RoundScoringEvent.PLANETARY_INSTITUTE_BUILT, 1);
                 case ACADEMY -> roundScoringService.award(gameId, round, playerState, RoundScoringEvent.ACADEMY_BUILT, 1);
                 default -> {}
@@ -643,12 +679,33 @@ public class BuildingService {
                     game.getEconomyTrackOption(), coveredTileCode);
         }
 
+        // 검은행성 배치 (거리 5단계 진입 시, 리치 전에 처리)
+        if (lostPlanetHexQ != null && lostPlanetHexR != null) {
+            PlaceMinePlayResponse lpResult = placeLostPlanetInternal(game, playerId, lostPlanetHexQ, lostPlanetHexR);
+            if (!lpResult.success()) {
+                return lpResult.message();
+            }
+        }
+
         // 액션 저장 (턴 진행은 리치 해소 후)
         actionService.saveActionOnly(gameId, playerId, actionType, actionData);
 
+        // BASIC_EXP_TILE_3 (2삽 1광): 후속 광산 배치 대기 (턴 넘기지 않음)
+        boolean hasDeferredMine = techTileCode != null && techTileCode.equals("BASIC_EXP_TILE_3");
+
         // 파워 리치 처리
         List<GameBuilding> allBuildings = gameBuildingRepository.findByGameId(gameId);
-        powerLeechService.createBatchAndProcess(game, playerId, building.getHexQ(), building.getHexR(), targetType, allBuildings, null, null);
+        if (lostPlanetHexQ != null && lostPlanetHexR != null) {
+            // 검은행성이 있으면: 업그레이드 리치 → 해소 후 검은행성 리치로 연결
+            String lpFollowUp = String.format("{\"hexQ\":%d,\"hexR\":%d,\"playerId\":\"%s\"}", lostPlanetHexQ, lostPlanetHexR, playerId);
+            powerLeechService.createBatchAndProcess(game, playerId, building.getHexQ(), building.getHexR(), targetType, allBuildings, "LOST_PLANET_LEECH", lpFollowUp);
+        } else if (hasDeferredMine) {
+            // 2삽 1광: 리치 해소 후 광산 배치 대기
+            String deferredData = String.format("{\"terraformDiscount\":2,\"triggerPlayerId\":\"%s\"}", playerId);
+            powerLeechService.createBatchAndProcess(game, playerId, building.getHexQ(), building.getHexR(), targetType, allBuildings, "PLACE_MINE_TERRAFORM_2", deferredData);
+        } else {
+            powerLeechService.createBatchAndProcess(game, playerId, building.getHexQ(), building.getHexR(), targetType, allBuildings, null, null);
+        }
 
         return null; // 성공
     }
@@ -801,6 +858,23 @@ public class BuildingService {
     public PlaceMinePlayResponse placeLostPlanet(UUID gameId, UUID playerId, int hexQ, int hexR) {
         Game game = gameRepository.findById(gameId)
                 .orElseThrow(() -> new IllegalArgumentException("게임을 찾을 수 없습니다"));
+        PlaceMinePlayResponse result = placeLostPlanetInternal(game, playerId, hexQ, hexR);
+        if (!result.success()) return result;
+
+        // 액션 저장 (턴 유지 — 리치 해소 후 턴 진행)
+        actionService.saveActionOnly(gameId, playerId, ActionType.PLACE_MINE,
+                String.format("{\"hexQ\":%d,\"hexR\":%d,\"type\":\"LOST_PLANET\"}", hexQ, hexR));
+
+        // 리치 처리
+        List<GameBuilding> allBuildings = gameBuildingRepository.findByGameId(gameId);
+        powerLeechService.createBatchAndProcess(game, playerId, hexQ, hexR, BuildingType.LOST_PLANET_MINE, allBuildings, null, null);
+
+        return result;
+    }
+
+    /** 검은행성 배치 핵심 로직 (리치/액션 저장 제외) */
+    private PlaceMinePlayResponse placeLostPlanetInternal(Game game, UUID playerId, int hexQ, int hexR) {
+        UUID gameId = game.getId();
 
         GamePlayerState ps = gamePlayerStateRepository.findByGameIdAndPlayerId(gameId, playerId)
                 .orElseThrow(() -> new IllegalStateException("플레이어 상태를 찾을 수 없습니다"));
@@ -834,7 +908,6 @@ public class BuildingService {
         GameBuilding building = GameBuilding.place(gameId, playerId, hexQ, hexR, BuildingType.LOST_PLANET_MINE);
         gameBuildingRepository.save(building);
 
-        // 검은행성 배치 시 VP 없음 (원시행성 건설 보너스는 placeMineInPlay에서 처리)
         gamePlayerStateRepository.save(ps);
 
         // 라운드 점수: 광산 건설 취급
@@ -843,15 +916,7 @@ public class BuildingService {
         }
 
         log.info("[LOST_PLANET] 검은행성 배치: game={}, player={}, hex=({},{})", gameId, playerId, hexQ, hexR);
-
-        // 액션 저장 (턴 유지 — 리치 해소 후 턴 진행)
-        actionService.saveActionOnly(gameId, playerId, ActionType.PLACE_MINE,
-                String.format("{\"hexQ\":%d,\"hexR\":%d,\"type\":\"LOST_PLANET\"}", hexQ, hexR));
-
-        // 리치 처리
-        List<GameBuilding> allBuildings = gameBuildingRepository.findByGameId(gameId);
-        powerLeechService.createBatchAndProcess(game, playerId, hexQ, hexR, BuildingType.LOST_PLANET_MINE, allBuildings, null, null);
-
         return PlaceMinePlayResponse.success(gameId, hexQ, hexR, 0);
     }
+
 }

@@ -14,13 +14,13 @@
   INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), 'tester02');
   INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), 'tester03');
   INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), 'tester04');
-  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '90/루다');
-  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '93/재원');
-  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '93/남현');
-  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '93/흥석');
-  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '94/동민');
-  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '95/도희');
-  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '95/지영');
-  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '97/준혁');
-  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '98/성태');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '루다');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '재원');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '남현');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '흥석');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '동민');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '도희');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '지영');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '준혁');
+  INSERT INTO registered_player (id, nickname) VALUES (gen_random_uuid(), '성태');
 

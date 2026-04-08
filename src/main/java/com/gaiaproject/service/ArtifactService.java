@@ -220,6 +220,23 @@ public class ArtifactService {
                 vpLogService.logVp(ps.getGameId(), ps.getPlayerId(), VpCategory.ARTIFACT, vp, null, "VP per track level 3+");
                 log.info("[ARTIFACT_11] 레벨3+트랙 {}개 × 3VP = {}VP", count, vp);
             }
+            case "VP_PER_PLANET_TYPE_PLUS_3" -> {
+                // 행성 유형당 1VP + 3VP
+                List<GameBuilding> ptBuildings = buildingRepository.findByGameIdAndPlayerId(gameId, ps.getPlayerId());
+                Set<String> planetTypes = new HashSet<>();
+                for (GameBuilding b : ptBuildings) {
+                    if (b.getBuildingType() == BuildingType.GAIAFORMER || b.isLantidsMine()) continue;
+                    GameHex hex = hexRepository.findByGameIdAndHexQAndHexR(gameId, b.getHexQ(), b.getHexR()).orElse(null);
+                    if (hex != null && hex.getPlanetType() != com.gaiaproject.domain.enumtype.player.PlanetType.EMPTY
+                            && hex.getPlanetType() != com.gaiaproject.domain.enumtype.player.PlanetType.TRANSDIM) {
+                        planetTypes.add(hex.getPlanetType().name());
+                    }
+                }
+                int vp = planetTypes.size() + 3;
+                ps.addVP(vp);
+                vpLogService.logVp(ps.getGameId(), ps.getPlayerId(), VpCategory.ARTIFACT, vp, null, "행성 유형 " + planetTypes.size() + "종 + 3VP");
+                log.info("[ARTIFACT_12] 행성 유형 {}종 + 3VP = {}VP", planetTypes.size(), vp);
+            }
             case "FEDERATION_TOKEN_DOUBLE_USE" -> {
                 // 특수: 사용한 연방 토큰 하나를 다시 사용 가능하게 뒤집기
                 // 이 효과는 획득 즉시가 아니라 게임 중 선택 사용이므로 여기서는 패스

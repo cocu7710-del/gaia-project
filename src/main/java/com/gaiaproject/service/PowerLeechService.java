@@ -34,6 +34,7 @@ public class PowerLeechService {
     private final ActionService actionService;
     private final GamePlayerTechTileRepository playerTechTileRepository;
     private final com.gaiaproject.repository.map.GameHexRepository hexRepository;
+    private final com.gaiaproject.repository.building.GameBuildingRepository buildingRepository;
     private final VpLogService vpLogService;
 
     /**
@@ -49,6 +50,10 @@ public class PowerLeechService {
                                        int hexQ, int hexR, BuildingType newType,
                                        List<GameBuilding> allBuildings,
                                        String followUpType, String followUpData) {
+        // 게임 종료 후에는 리치 생성하지 않음
+        if ("FINISHED".equals(game.getGamePhase()) || "FINISHED".equals(game.getStatus())) {
+            return;
+        }
         if (buildingPowerValue(newType) == 0) {
             // 파워 값 0인 건물 (가이아포머 등) → 리치 없음 → 바로 턴 진행
             if (followUpType != null) {
@@ -292,6 +297,7 @@ public class PowerLeechService {
                 UUID triggerPlayerId = resolveTriggerPlayerId(gameId,
                         game.getCurrentTurnSeatNo() != null ? game.getCurrentTurnSeatNo() : 1);
                 if (triggerPlayerId == null) triggerPlayerId = offer.getTriggerPlayerId();
+
                 // 건설자 타이머 재시작 (후속 액션 처리용)
                 actionService.startTurnTimer(gameId, triggerPlayerId);
                 broadcastFollowUp(gameId, triggerPlayerId, followUpType, followUpData);
@@ -372,6 +378,26 @@ public class PowerLeechService {
     }
 
     private void broadcastFollowUp(UUID gameId, UUID triggerPlayerId, String followUpType, String followUpData) {
+        // 검은행성 리치: 내부적으로 리치 배치 발동
+        if ("LOST_PLANET_LEECH".equals(followUpType) && followUpData != null) {
+            try {
+                var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                var node = mapper.readTree(followUpData);
+                int lpHexQ = node.get("hexQ").asInt();
+                int lpHexR = node.get("hexR").asInt();
+                Game game = gameRepository.findById(gameId).orElseThrow();
+                List<GameBuilding> allBlds = buildingRepository.findByGameId(gameId);
+                createBatchAndProcess(game, triggerPlayerId, lpHexQ, lpHexR,
+                        com.gaiaproject.domain.enumtype.building.BuildingType.LOST_PLANET_MINE, allBlds, null, null);
+                log.info("[LEECH] 검은행성 리치 자동 발동: game={}, hex=({},{})", gameId, lpHexQ, lpHexR);
+                return;
+            } catch (Exception e) {
+                log.error("[LEECH] 검은행성 리치 처리 실패, 턴 진행으로 대체", e);
+                Game game = gameRepository.findById(gameId).orElse(null);
+                if (game != null) actionService.advanceTurnAndBroadcast(game);
+                return;
+            }
+        }
         webSocketService.broadcastDeferredActionRequired(gameId, triggerPlayerId, followUpType, followUpData);
     }
 
@@ -388,7 +414,7 @@ public class PowerLeechService {
 
     private int buildingPowerValue(BuildingType type) {
         return switch (type) {
-            case MINE -> 1;
+            case MINE, LOST_PLANET_MINE -> 1;
             case TRADING_STATION, RESEARCH_LAB -> 2;
             case PLANETARY_INSTITUTE, ACADEMY -> 3;
             default -> 0;

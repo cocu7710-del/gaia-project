@@ -229,6 +229,12 @@ public class FactionAbilityService {
                     com.gaiaproject.domain.enumtype.rounds.RoundScoringEvent.RESEARCH_ADVANCED, 1);
         }
 
+        // 라운드 점수: 교역소 건설로 취급 (다운그레이드도 건설 카운트)
+        if (game.getCurrentRound() != null) {
+            roundScoringService.award(gameId, game.getCurrentRound(), ps,
+                    com.gaiaproject.domain.enumtype.rounds.RoundScoringEvent.TRADING_STATION_BUILT, 1);
+        }
+
         ps.markFactionAbilityUsed();
         playerStateRepository.save(ps);
         log.info("[FIRAKS PI] RL→TS 다운그레이드 + {} 전진 (lv{}): player={}", req.trackCode(), firakNewLevel, playerId);
@@ -451,6 +457,9 @@ public class FactionAbilityService {
             }
 
             log.info("[ITARS] 가이아 4 → 기술타일: player={}, tile={}", playerId, request.tileCode());
+
+            // 다른 플레이어에게 상태 변경(기술타일/자원) 실시간 동기화
+            webSocketService.broadcastStateUpdated(gameId);
 
             // 아직 4개 이상 남아있으면 다시 선택 기회
             if (ps.getGaiaPower() >= 4) {
